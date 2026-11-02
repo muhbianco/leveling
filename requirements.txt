@@ -1,0 +1,10 @@
+fastapi==0.141.1
+uvicorn[standard]==0.52.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+httpx==0.28.1
+# Google id_token: RS256 signature against Google's published keys (same as api-commerce).
+PyJWT==2.15.0
+cryptography==50.0.1
+# Drives the real Chromium that keeps the game open (browser binary installed in the Dockerfile).
+playwright==1.64.1

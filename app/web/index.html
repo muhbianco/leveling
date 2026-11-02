@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Leveling Keeper</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <h1>Leveling Keeper</h1>
+    <button type="button" class="link" id="logout">Sair</button>
+  </header>
+
+  <main>
+    <section class="card power">
+      <button type="button" id="toggle" class="toggle" aria-pressed="false">
+        <span class="knob"></span>
+        <span class="label" id="toggle-label">Desligado</span>
+      </button>
+      <div class="phase">
+        <span class="badge" id="phase">…</span>
+        <span class="muted" id="phase-since"></span>
+      </div>
+      <p class="reason" id="reason"></p>
+      <p class="hint">Ligue quando sair do jogo. Ao abrir o jogo em outro aparelho, o servidor
+        desliga sozinho.</p>
+    </section>
+
+    <section class="card facts">
+      <dl>
+        <div><dt>Último sinal do jogo</dt><dd id="signal">—</dd></div>
+        <div><dt>Reconexões (24 h)</dt><dd id="reconnects">—</dd></div>
+        <div><dt>Próxima tentativa</dt><dd id="retry">—</dd></div>
+        <div><dt>Tela remota</dt><dd id="viewers">—</dd></div>
+      </dl>
+    </section>
+
+    <section class="card shot">
+      <img id="shot" alt="Tela do jogo no servidor" hidden>
+      <p class="muted" id="shot-empty">Sem imagem: o navegador do servidor está fechado.</p>
+      <div class="actions">
+        <a class="button" id="vnc" href="/vnc/" target="_blank" rel="noopener">Abrir tela remota</a>
+        <button type="button" class="button" id="reload">Recarregar jogo</button>
+        <button type="button" class="button" id="retry-login" hidden>Tentar login de novo</button>
+      </div>
+      <p class="hint">Com a tela remota aberta o robô só observa: não recarrega nem entra sozinho.</p>
+    </section>
+
+    <section class="card">
+      <h2>Eventos</h2>
+      <ol class="events" id="events"></ol>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,42 @@
+# Push no main = deploy do Leveling Keeper. Tag imutável = sha12 do commit (LEVELING_TAG).
+# Ordem: build da imagem → StackUpdate do Portainer com o YAML do repo e a tag nova (dry-run antes)
+# → espera o serviço na tag → smoke no /healthz público.
+# Segredo: /root/.portainer-token (Portainer), do host. Os do app ficam em /root/leveling-secrets.
+when:
+  - event: push
+    branch: main
+
+depends_on: [ci]
+
+clone:
+  git:
+    image: woodpeckerci/plugin-git:2.10.1
+    settings:
+      depth: 50
+      partial: false
+
+steps:
+  build:
+    image: muhrilobianco/ci-deployer:1
+    pull: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker/config.json:/root/.docker/config.json:ro
+    commands:
+      - hel1-build --image muhrilobianco/leveling-keeper --tag ${CI_COMMIT_SHA:0:12} --context . --extra-tag latest
+
+  deploy:
+    image: muhrilobianco/ci-deployer:1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker/config.json:/root/.docker/config.json:ro
+      - /var/lib/hel1-deploy:/var/lib/hel1-deploy
+      - /root/.portainer-token:/root/.portainer-token:ro
+    environment:
+      PORTAINER_URL: https://portainer.muhbianco.com.br
+    commands:
+      - >-
+        hel1-deploy exec --app leveling --tag ${CI_COMMIT_SHA:0:12}
+        --wait-services leveling_keeper
+        --smoke https://leveling.muhbianco.com.br/healthz
+        -- infra/deploy.sh ${CI_COMMIT_SHA:0:12}

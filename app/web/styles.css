@@ -1,0 +1,109 @@
+:root {
+  --bg: #f4f2f8;
+  --card: #ffffff;
+  --text: #1d1b24;
+  --muted: #6b6878;
+  --line: #e2dfea;
+  --accent: #6d4bd8;
+  --ok: #1f8a4c;
+  --warn: #b26a00;
+  --bad: #c0362c;
+  --off: #6b6878;
+  --busy: #2d6cdf;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121019;
+    --card: #1c1926;
+    --text: #ece9f5;
+    --muted: #a39fb3;
+    --line: #2e2a3b;
+    --accent: #9b7bff;
+    --ok: #4cc47e;
+    --warn: #e0a440;
+    --bad: #ff6b5e;
+    --off: #a39fb3;
+    --busy: #6aa0ff;
+  }
+}
+
+/* O atributo hidden precisa vencer o display das classes (.button, .badge…). */
+[hidden] { display: none !important; }
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+main { max-width: 640px; margin: 0 auto; padding: 0 16px 32px; display: grid; gap: 16px; }
+
+.top {
+  max-width: 640px; margin: 0 auto; padding: 16px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+h1 { font-size: 1.2rem; margin: 0; }
+h2 { font-size: 1rem; margin: 0 0 8px; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+.muted, .hint { color: var(--muted); }
+.hint { font-size: 0.85rem; margin: 12px 0 0; }
+.reason { min-height: 1.4em; margin: 8px 0 0; }
+.error { color: var(--bad); }
+
+.toggle {
+  width: 100%; display: flex; align-items: center; gap: 14px;
+  padding: 14px; border-radius: 999px; border: 2px solid var(--line);
+  background: transparent; color: var(--text); font-size: 1.1rem; font-weight: 600; cursor: pointer;
+}
+.toggle .knob {
+  width: 52px; height: 30px; border-radius: 999px; background: var(--line); position: relative; flex: none;
+  transition: background 0.15s;
+}
+.toggle .knob::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--card); transition: transform 0.15s;
+}
+.toggle.on { border-color: var(--accent); }
+.toggle.on .knob { background: var(--accent); }
+.toggle.on .knob::after { transform: translateX(22px); }
+
+.phase { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.badge {
+  display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.85rem; font-weight: 600;
+  color: #fff; background: var(--off);
+}
+.badge.ok { background: var(--ok); }
+.badge.warn { background: var(--warn); }
+.badge.bad { background: var(--bad); }
+.badge.busy { background: var(--busy); }
+
+.facts dl { margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.facts dt { color: var(--muted); font-size: 0.8rem; }
+.facts dd { margin: 0; font-weight: 600; }
+
+.shot img { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); display: block; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+.button {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 9px 14px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--card); color: var(--text); font: inherit; text-decoration: none; cursor: pointer;
+}
+.button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.button:disabled { opacity: 0.5; cursor: default; }
+.link { background: none; border: none; color: var(--accent); font: inherit; cursor: pointer; }
+
+.events { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 0.9rem; }
+.events li { display: grid; grid-template-columns: auto 1fr; gap: 10px; }
+.events time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.events .assumido span, .events .desligado span { color: var(--muted); }
+.events .erro span { color: var(--bad); }
+.events .jogando span { color: var(--ok); }
+
+body.login { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
+body.login .card { max-width: 380px; width: 100%; text-align: center; }

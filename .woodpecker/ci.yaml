@@ -1,0 +1,24 @@
+# Lint, tipos e testes + gitleaks.
+when:
+  - event: [push, pull_request, manual]
+
+steps:
+  lint-test:
+    image: python:3.12-slim
+    environment:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    commands:
+      - pip install --quiet -r requirements-dev.txt
+      - ruff check .
+      - ruff format --check .
+      - mypy app
+      - pytest -q
+      - pip install --quiet pip-audit==2.10.1
+      - pip-audit -r requirements.txt
+
+  gitleaks:
+    image: zricethezav/gitleaks:v8.30.1
+    depends_on: []
+    commands:
+      - mkdir -p /tmp/src && git archive HEAD | tar -x -C /tmp/src
+      - gitleaks dir --redact --no-banner /tmp/src
