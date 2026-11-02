@@ -2,8 +2,9 @@
 # Ordem: build da imagem → StackUpdate do Portainer com o YAML do repo e a tag nova (dry-run antes)
 # → espera o serviço na tag → smoke no /healthz público.
 # Segredo: /root/.portainer-token (Portainer), do host. Os do app ficam em /root/leveling-secrets.
+# Evento manual na main também faz deploy (redeploy pela interface sem commit vazio).
 when:
-  - event: push
+  - event: [push, manual]
     branch: main
 
 depends_on: [ci]
