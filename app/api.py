@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import html
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlencode
@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from playwright.async_api import Error as PlaywrightError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.auth import (
     FLOW_COOKIE,
@@ -25,10 +25,7 @@ from app.auth import (
     Session,
 )
 from app.config import Settings
-from app.display import Display
-from app.game import Driver
-from app.state import StateStore
-from app.supervisor import Supervisor
+from app.slots import DataKeyError, SlotFullError, SlotManager, SlotRuntime
 from app.vnc import bridge
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -58,17 +55,33 @@ LOGIN_ERRORS = {
 
 @dataclass
 class Services:
-    store: StateStore
-    supervisor: Supervisor
     auth: AuthService
-    driver: Driver
-    display: Display | None = None
-    supervisor_task: asyncio.Task[None] | None = None
-    last_screenshot: float = field(default=0.0)
+    slots: SlotManager
 
 
 class PowerIn(BaseModel):
     on: bool
+
+
+class CredentialsIn(BaseModel):
+    # Nome de caçador (ou e-mail da conta) e senha do jogo. A senha nunca volta em resposta.
+    username: str = Field(min_length=3, max_length=64)
+    password: str = Field(min_length=1, max_length=128, repr=False)
+
+    @field_validator("username")
+    @classmethod
+    def _clean_username(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 3 or any(c.isspace() or not c.isprintable() for c in value):
+            raise ValueError("nome de caçador inválido")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def _check_password(cls, value: str) -> str:
+        if any(c in value for c in ("\r", "\n", "\x00")):
+            raise ValueError("senha com caractere inválido")
+        return value
 
 
 def services(request: Request) -> Services:
@@ -91,6 +104,14 @@ ReadSession = Annotated[Session, Depends(read_session)]
 WriteSession = Annotated[Session, Depends(write_session)]
 
 
+def _runtime(svc: Services, sess: Session) -> SlotRuntime:
+    """O slot vem do e-mail da sessão, nunca de um id do navegador."""
+    runtime = svc.slots.for_email(sess.email)
+    if runtime is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="sem_instancia")
+    return runtime
+
+
 def build_router(settings: Settings) -> APIRouter:
     router = APIRouter()
 
@@ -101,11 +122,9 @@ def build_router(settings: Settings) -> APIRouter:
 
     @router.get("/healthz")
     async def healthz(svc: Svc) -> JSONResponse:
-        task_ok = svc.supervisor_task is None or not svc.supervisor_task.done()
-        display_ok = svc.display is None or svc.display.alive()
-        ok = task_ok and display_ok
+        ok = svc.slots.healthy()
         return JSONResponse(
-            {"ok": ok, "supervisor": task_ok, "display": display_ok},
+            {"ok": ok, "slots": svc.slots.used},
             status_code=status.HTTP_200_OK if ok else status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
@@ -175,42 +194,59 @@ def build_router(settings: Settings) -> APIRouter:
 
     @router.get("/api/status")
     async def get_status(svc: Svc, sess: ReadSession) -> JSONResponse:
-        return _status_response(svc, sess)
+        return await _status_response(svc, sess)
+
+    @router.put("/api/slot/credentials")
+    async def save_credentials(body: CredentialsIn, svc: Svc, sess: WriteSession) -> JSONResponse:
+        try:
+            await svc.slots.save_credentials(sess.email, body.username, body.password)
+        except SlotFullError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="sem_vaga") from exc
+        except DataKeyError as exc:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="sem_chave") from exc
+        return await _status_response(svc, sess)
+
+    @router.delete("/api/slot")
+    async def delete_slot(svc: Svc, sess: WriteSession) -> JSONResponse:
+        if not await svc.slots.delete(sess.email):
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="sem_instancia")
+        return await _status_response(svc, sess)
 
     @router.post("/api/power")
     async def power(body: PowerIn, svc: Svc, sess: WriteSession) -> JSONResponse:
-        await svc.supervisor.set_power(body.on)
-        return _status_response(svc, sess)
+        await _runtime(svc, sess).supervisor.set_power(body.on)
+        return await _status_response(svc, sess)
 
     @router.post("/api/reload", status_code=status.HTTP_202_ACCEPTED)
-    async def reload(svc: Svc, _s: WriteSession) -> Response:
-        if not svc.store.power.desired_on:
+    async def reload(svc: Svc, sess: WriteSession) -> Response:
+        runtime = _runtime(svc, sess)
+        if not runtime.store.power.desired_on:
             raise HTTPException(status.HTTP_409_CONFLICT, detail="desligado")
-        await svc.supervisor.request_reload()
+        await runtime.supervisor.request_reload()
         return Response(status_code=status.HTTP_202_ACCEPTED)
 
     @router.post("/api/retry-login", status_code=status.HTTP_202_ACCEPTED)
-    async def retry_login(svc: Svc, _s: WriteSession) -> Response:
-        await svc.supervisor.retry_login()
+    async def retry_login(svc: Svc, sess: WriteSession) -> Response:
+        await _runtime(svc, sess).supervisor.retry_login()
         return Response(status_code=status.HTTP_202_ACCEPTED)
 
     @router.get("/api/events")
     async def events(
-        svc: Svc, _s: ReadSession, limit: Annotated[int, Query(ge=1, le=100)] = 50
+        svc: Svc, sess: ReadSession, limit: Annotated[int, Query(ge=1, le=100)] = 50
     ) -> JSONResponse:
-        return JSONResponse(
-            {"events": [asdict(e) for e in svc.store.events(limit)]},
-            headers={"Cache-Control": "no-store"},
-        )
+        runtime = svc.slots.for_email(sess.email)
+        items = [] if runtime is None else [asdict(e) for e in runtime.store.events(limit)]
+        return JSONResponse({"events": items}, headers={"Cache-Control": "no-store"})
 
     @router.get("/api/screenshot")
-    async def screenshot(svc: Svc, _s: ReadSession) -> Response:
+    async def screenshot(svc: Svc, sess: ReadSession) -> Response:
+        runtime = _runtime(svc, sess)
         now = time.monotonic()
-        if now - svc.last_screenshot < SCREENSHOT_MIN_INTERVAL_S:
+        if now - runtime.last_screenshot < SCREENSHOT_MIN_INTERVAL_S:
             raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, detail="devagar")
-        svc.last_screenshot = now
+        runtime.last_screenshot = now
         try:
-            image = await svc.driver.screenshot()
+            image = await runtime.driver.screenshot()
         except (PlaywrightError, TimeoutError) as exc:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="sem imagem") from exc
         if image is None:
@@ -220,7 +256,8 @@ def build_router(settings: Settings) -> APIRouter:
     # --- tela remota (noVNC) ----------------------------------------------------------------------
 
     @router.get("/vnc/")
-    async def vnc_home(svc: Svc, _s: ReadSession) -> Response:
+    async def vnc_home(svc: Svc, sess: ReadSession) -> Response:
+        _runtime(svc, sess)
         return RedirectResponse(
             f"/vnc/vnc.html?{NOVNC_QUERY}", status_code=status.HTTP_303_SEE_OTHER
         )
@@ -235,16 +272,27 @@ def build_router(settings: Settings) -> APIRouter:
     @router.websocket("/vnc/ws")
     async def vnc_ws(ws: WebSocket) -> None:
         svc: Services = ws.app.state.services
-        await bridge(ws, settings, svc.auth, svc.supervisor)
+        await bridge(ws, settings, svc.auth, svc.slots)
 
     return router
 
 
-def _status_response(svc: Services, sess: Session) -> JSONResponse:
-    payload = asdict(svc.supervisor.status())
-    payload.update(
-        {"email": sess.email, "csrf": sess.csrf, "vnc_url": f"/vnc/vnc.html?{NOVNC_QUERY}"}
-    )
+async def _status_response(svc: Services, sess: Session) -> JSONResponse:
+    used = svc.slots.max_slots - svc.slots.capacity_left()
+    payload: dict[str, Any] = {
+        "email": sess.email,
+        "csrf": sess.csrf,
+        "capacity": {"used": used, "max": svc.slots.max_slots},
+        "slot": None,
+    }
+    runtime = svc.slots.for_email(sess.email)
+    if runtime is not None:
+        username, source = await svc.slots.credential_info(runtime)
+        fields = asdict(runtime.supervisor.status())
+        fields.pop("game_username", None)
+        payload.update(fields)
+        payload["slot"] = {"id": runtime.record.id, "username": username, "credentials": source}
+        payload["vnc_url"] = f"/vnc/vnc.html?{NOVNC_QUERY}"
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 

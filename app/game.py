@@ -97,10 +97,14 @@ class GameDriver:
         self,
         settings: Settings,
         playwright: Playwright,
+        profile_dir: Path,
+        display: str,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._settings = settings
         self._pw = playwright
+        self._profile = profile_dir
+        self._display = display
         self._clock = clock
         self._ctx: BrowserContext | None = None
         self._page: Page | None = None
@@ -116,7 +120,7 @@ class GameDriver:
 
     async def launch(self) -> None:
         await self.close()
-        profile = self._settings.profile_dir
+        profile = self._profile
         await asyncio.to_thread(profile.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(clear_profile_locks, profile)
         width, height = self._settings.screen_width, self._settings.screen_height
@@ -130,7 +134,7 @@ class GameDriver:
             # página, então o Chromium não oferece o Tradutor por cima do jogo.
             env={
                 **os.environ,
-                "DISPLAY": self._settings.display,
+                "DISPLAY": self._display,
                 "LANGUAGE": "pt_BR:pt",
                 "LANG": "pt_BR.UTF-8",
             },

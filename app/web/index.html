@@ -10,49 +10,97 @@
 </head>
 <body>
   <header class="top">
-    <h1>Leveling Keeper</h1>
+    <div>
+      <h1>Leveling Keeper</h1>
+      <p class="muted small" id="who"></p>
+    </div>
     <button type="button" class="link" id="logout">Sair</button>
   </header>
 
   <main>
-    <section class="card power">
-      <button type="button" id="toggle" class="toggle" aria-pressed="false">
-        <span class="knob"></span>
-        <span class="label" id="toggle-label">Desligado</span>
-      </button>
-      <div class="phase">
-        <span class="badge" id="phase">…</span>
-        <span class="muted" id="phase-since"></span>
-      </div>
-      <p class="reason" id="reason"></p>
-      <p class="hint">Ligue quando sair do jogo. Ao abrir o jogo em outro aparelho, o servidor
-        desliga sozinho.</p>
+    <section class="card" id="setup" hidden>
+      <h2>Sua instância</h2>
+      <p class="muted" id="setup-capacity"></p>
+      <form id="setup-form" class="form" autocomplete="off">
+        <label>Nome de caçador
+          <input name="username" required minlength="3" maxlength="64" autocomplete="off"
+                 autocapitalize="off" spellcheck="false">
+        </label>
+        <label>Senha do jogo
+          <input name="password" type="password" required maxlength="128"
+                 autocomplete="new-password">
+        </label>
+        <button type="submit" class="button primary">Criar minha instância</button>
+      </form>
+      <p class="error" id="setup-error" hidden></p>
+      <p class="hint">A senha fica cifrada no servidor e só serve para o robô entrar no jogo quando
+        a sessão cair. Dá para apagar tudo quando quiser.</p>
     </section>
 
-    <section class="card facts">
-      <dl>
-        <div><dt>Último sinal do jogo</dt><dd id="signal">—</dd></div>
-        <div><dt>Reconexões (24 h)</dt><dd id="reconnects">—</dd></div>
-        <div><dt>Próxima tentativa</dt><dd id="retry">—</dd></div>
-        <div><dt>Tela remota</dt><dd id="viewers">—</dd></div>
-      </dl>
-    </section>
+    <div id="panel" hidden>
+      <section class="card power">
+        <button type="button" id="toggle" class="toggle" aria-pressed="false">
+          <span class="knob"></span>
+          <span class="label" id="toggle-label">Desligado</span>
+        </button>
+        <div class="phase">
+          <span class="badge" id="phase">…</span>
+          <span class="muted" id="phase-since"></span>
+        </div>
+        <p class="reason" id="reason"></p>
+        <p class="hint">Ligue quando sair do jogo. Ao abrir o jogo em outro aparelho, o servidor
+          desliga sozinho.</p>
+      </section>
 
-    <section class="card shot">
-      <img id="shot" alt="Tela do jogo no servidor" hidden>
-      <p class="muted" id="shot-empty">Sem imagem: o navegador do servidor está fechado.</p>
-      <div class="actions">
-        <a class="button" id="vnc" href="/vnc/" target="_blank" rel="noopener">Abrir tela remota</a>
-        <button type="button" class="button" id="reload">Recarregar jogo</button>
-        <button type="button" class="button" id="retry-login" hidden>Tentar login de novo</button>
-      </div>
-      <p class="hint">Com a tela remota aberta o robô só observa: não recarrega nem entra sozinho.</p>
-    </section>
+      <section class="card facts">
+        <dl>
+          <div><dt>Último sinal do jogo</dt><dd id="signal">—</dd></div>
+          <div><dt>Reconexões (24 h)</dt><dd id="reconnects">—</dd></div>
+          <div><dt>Próxima tentativa</dt><dd id="retry">—</dd></div>
+          <div><dt>Tela remota</dt><dd id="viewers">—</dd></div>
+        </dl>
+      </section>
 
-    <section class="card">
-      <h2>Eventos</h2>
-      <ol class="events" id="events"></ol>
-    </section>
+      <section class="card shot">
+        <img id="shot" alt="Tela do jogo no servidor" hidden>
+        <p class="muted" id="shot-empty">Sem imagem: o navegador do servidor está fechado.</p>
+        <div class="actions">
+          <a class="button" id="vnc" href="/vnc/" target="_blank" rel="noopener">Abrir tela remota</a>
+          <button type="button" class="button" id="reload">Recarregar jogo</button>
+          <button type="button" class="button" id="retry-login" hidden>Tentar login de novo</button>
+        </div>
+        <p class="hint">Com a tela remota aberta o robô só observa: não recarrega nem entra sozinho.</p>
+      </section>
+
+      <section class="card">
+        <h2>Eventos</h2>
+        <ol class="events" id="events"></ol>
+      </section>
+
+      <section class="card" id="account">
+        <h2>Conta do jogo</h2>
+        <p id="account-user"></p>
+        <details>
+          <summary>Trocar caçador ou senha</summary>
+          <form id="creds-form" class="form" autocomplete="off">
+            <label>Nome de caçador
+              <input name="username" required minlength="3" maxlength="64" autocomplete="off"
+                     autocapitalize="off" spellcheck="false">
+            </label>
+            <label>Senha do jogo
+              <input name="password" type="password" required maxlength="128"
+                     autocomplete="new-password">
+            </label>
+            <button type="submit" class="button primary">Salvar</button>
+          </form>
+        </details>
+        <p class="error" id="account-error" hidden></p>
+        <div class="actions">
+          <button type="button" class="button danger" id="delete-slot">Apagar minha instância</button>
+        </div>
+        <p class="hint">Apagar fecha o navegador do servidor, apaga o cadastro e libera a vaga.</p>
+      </section>
+    </div>
   </main>
 </body>
 </html>

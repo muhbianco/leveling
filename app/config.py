@@ -10,10 +10,11 @@ from functools import cached_property
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 GOOGLE_ISSUER = "https://accounts.google.com"
-SECRET_KEYS = ("GAME_USERNAME", "GAME_PASSWORD", "GOOGLE_CLIENT_SECRET")
+SECRET_KEYS = ("GAME_USERNAME", "GAME_PASSWORD", "GOOGLE_CLIENT_SECRET", "DATA_KEY")
 
 
 class Settings(BaseSettings):
@@ -21,8 +22,13 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     public_url: str = "https://leveling.muhbianco.com.br"
-    # E-mails Google que entram no painel (vírgula). Vazio = ninguém entra.
+    # E-mails Google que entram no painel (vírgula). Vazio = ninguém entra. O primeiro dono herda
+    # a instância de antes dos slots e pode usar o usuário/senha do arquivo de segredos.
     admin_emails: str = ""
+    # Outros jogadores liberados: cada um cadastra o próprio caçador pelo painel.
+    player_emails: str = ""
+    # Instâncias ao mesmo tempo. O jogo derruba todas acima de 2 contas pelo mesmo IP.
+    max_slots: int = Field(default=2, ge=1, le=2)
     google_client_id: str = ""
     google_oidc_authorize_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
     google_oidc_token_url: str = "https://oauth2.googleapis.com/token"  # noqa: S105 (a URL)
@@ -35,19 +41,28 @@ class Settings(BaseSettings):
     game_url: str = "https://levelingidle2d.com.br/jogar"
     # Xvfb + x11vnc são do container; no desenvolvimento ficam desligados.
     manage_display: bool = True
-    display: str = ":99"
+    # Slot N usa a tela :(display_base + N - 1) e o x11vnc em vnc_port_base + N - 1.
+    display_base: int = 99
     screen_width: int = 1280
     screen_height: int = 720
     vnc_host: str = "127.0.0.1"
-    vnc_port: int = 5900
+    vnc_port_base: int = 5900
     novnc_dir: Path = Path("/usr/share/novnc")
     vnc_max_clients: int = 2
 
     tick_seconds: float = 5.0
 
     @cached_property
+    def admin_email_list(self) -> tuple[str, ...]:
+        return _emails(self.admin_emails)
+
+    @cached_property
     def admin_email_set(self) -> frozenset[str]:
-        return frozenset(e.strip().lower() for e in self.admin_emails.split(",") if e.strip())
+        return frozenset(self.admin_email_list)
+
+    @cached_property
+    def allowed_email_set(self) -> frozenset[str]:
+        return self.admin_email_set | frozenset(_emails(self.player_emails))
 
     @property
     def public_origin(self) -> str:
@@ -58,9 +73,20 @@ class Settings(BaseSettings):
     def redirect_uri(self) -> str:
         return f"{self.public_origin}/auth/callback"
 
-    @property
-    def profile_dir(self) -> Path:
-        return self.data_dir / "profile"
+    def display_for(self, slot_id: int) -> str:
+        return f":{self.display_base + slot_id - 1}"
+
+    def vnc_port_for(self, slot_id: int) -> int:
+        return self.vnc_port_base + slot_id - 1
+
+
+def _emails(raw: str) -> tuple[str, ...]:
+    seen: dict[str, None] = {}
+    for item in raw.split(","):
+        email = item.strip().lower()
+        if email:
+            seen.setdefault(email)
+    return tuple(seen)
 
 
 @dataclass(frozen=True)
@@ -68,8 +94,12 @@ class Secrets:
     game_username: str = ""
     game_password: str = field(default="", repr=False)
     google_client_secret: str = field(default="", repr=False)
+    # Chave Fernet das senhas cadastradas pelo painel (só no arquivo de segredos, nunca no volume).
+    data_key: str = field(default="", repr=False)
     # mtime do arquivo: o supervisor libera o login travado quando o dono troca a senha.
     version: float = 0.0
+    # De onde veio o usuário/senha do jogo (slots.SOURCE_*); vazio fora dos slots.
+    source: str = ""
 
     @property
     def has_game_credentials(self) -> bool:
@@ -105,5 +135,6 @@ def read_secrets(path: Path) -> Secrets:
         game_username=values["GAME_USERNAME"].strip(),
         game_password=values["GAME_PASSWORD"],
         google_client_secret=values["GOOGLE_CLIENT_SECRET"].strip(),
+        data_key=values["DATA_KEY"].strip(),
         version=version,
     )

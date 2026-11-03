@@ -2,6 +2,7 @@
 
 // Painel do Leveling Keeper. Sem build: um arquivo, fetch na própria origem.
 // Horários chegam em ISO com "Z" e são mostrados no fuso de São Paulo.
+// Cada conta Google vê só a própria instância: o servidor escolhe o slot pela sessão.
 
 const TZ = "America/Sao_Paulo";
 const STATUS_EVERY_MS = 5000;
@@ -17,6 +18,16 @@ const PHASES = {
   precisa_login: ["Precisa de login", "bad"],
   assumido: ["Assumido por outro aparelho", "off"],
   erro: ["Desligado por erro", "bad"],
+};
+
+const SOURCES = {
+  painel: "cadastrado neste painel",
+  servidor: "do arquivo de segredos do servidor",
+};
+
+const SAVE_ERRORS = {
+  sem_vaga: "Sem vaga: o servidor já roda o máximo de instâncias.",
+  sem_chave: "O servidor ainda não tem a chave para guardar senhas. Avise o dono.",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -55,9 +66,22 @@ async function api(path, options = {}) {
   return res;
 }
 
-function render(s) {
-  current = s;
-  csrf = s.csrf;
+function showError(id, message) {
+  const el = $(id);
+  el.textContent = message || "";
+  el.hidden = !message;
+}
+
+function renderSetup(s) {
+  const full = s.capacity.used >= s.capacity.max;
+  const free = s.capacity.max - s.capacity.used;
+  $("setup-capacity").textContent = full
+    ? `Sem vaga: o servidor já roda ${s.capacity.max} instâncias, o limite do jogo por internet.`
+    : `Informe o caçador e a senha do jogo para criar sua instância (${free} de ${s.capacity.max} vagas livres).`;
+  for (const el of $("setup-form").elements) el.disabled = full;
+}
+
+function renderPanel(s) {
   const [label, tone] = PHASES[s.phase] || [s.phase, "warn"];
   const toggle = $("toggle");
   toggle.setAttribute("aria-pressed", String(s.desired_on));
@@ -75,6 +99,21 @@ function render(s) {
   $("vnc").href = s.vnc_url;
   $("reload").disabled = !s.desired_on;
   $("retry-login").hidden = !(s.login_latched || (s.phase === "precisa_login" && s.has_credentials));
+  const slot = s.slot;
+  $("account-user").textContent = slot.username
+    ? `Caçador: ${slot.username} (${SOURCES[slot.credentials] || slot.credentials})`
+    : "Nenhum caçador cadastrado: use o formulário abaixo.";
+}
+
+function render(s) {
+  current = s;
+  csrf = s.csrf;
+  $("who").textContent = s.email;
+  const hasSlot = Boolean(s.slot);
+  $("setup").hidden = hasSlot;
+  $("panel").hidden = !hasSlot;
+  if (hasSlot) renderPanel(s);
+  else renderSetup(s);
 }
 
 async function refreshStatus() {
@@ -87,6 +126,7 @@ async function refreshStatus() {
 }
 
 async function refreshEvents() {
+  if (!current || !current.slot) return;
   try {
     const res = await api("/api/events?limit=50");
     if (!res.ok) return;
@@ -112,7 +152,7 @@ async function refreshEvents() {
 
 async function refreshShot(force = false) {
   const empty = $("shot-empty");
-  if (!current || !current.desired_on) {
+  if (!current || !current.slot || !current.desired_on) {
     $("shot").hidden = true;
     empty.textContent = "Sem imagem: o navegador do servidor está fechado.";
     empty.hidden = false;
@@ -130,20 +170,54 @@ async function refreshShot(force = false) {
     img.src = URL.createObjectURL(blob);
     if (old.startsWith("blob:")) URL.revokeObjectURL(old);
     img.hidden = false;
-    $("shot-empty").hidden = true;
+    empty.hidden = true;
   } catch (err) {
     // idem
   }
 }
 
-async function post(path, body) {
+async function send(path, method, body) {
   if (busy) return null;
   busy = true;
   try {
-    return await api(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
+    return await api(path, { method, body: body ? JSON.stringify(body) : undefined });
   } finally {
     busy = false;
   }
+}
+
+async function errorFrom(res) {
+  try {
+    const data = await res.json();
+    if (typeof data.detail === "string" && SAVE_ERRORS[data.detail]) return SAVE_ERRORS[data.detail];
+  } catch (err) {
+    // corpo sem JSON
+  }
+  if (res.status === 422) return "Confira o nome de caçador e a senha.";
+  return "Não foi possível salvar. Tente de novo.";
+}
+
+function bindCredentialsForm(formId, errorId) {
+  const form = $(formId);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    showError(errorId, "");
+    const data = new FormData(form);
+    const res = await send("/api/slot/credentials", "PUT", {
+      username: String(data.get("username") || ""),
+      password: String(data.get("password") || ""),
+    });
+    if (!res) return;
+    if (!res.ok) {
+      showError(errorId, await errorFrom(res));
+      return;
+    }
+    form.reset();
+    const details = form.closest("details");
+    if (details) details.open = false;
+    render(await res.json());
+    await tick(true);
+  });
 }
 
 async function tick(force = false) {
@@ -155,23 +229,34 @@ async function tick(force = false) {
 
 document.addEventListener("DOMContentLoaded", () => {
   $("toggle").addEventListener("click", async () => {
-    if (!current) return;
-    const res = await post("/api/power", { on: !current.desired_on });
+    if (!current || !current.slot) return;
+    const res = await send("/api/power", "POST", { on: !current.desired_on });
     if (res && res.ok) render(await res.json());
     await refreshEvents();
   });
   $("reload").addEventListener("click", async () => {
-    await post("/api/reload");
+    await send("/api/reload", "POST");
     setTimeout(() => tick(true), 3000);
   });
   $("retry-login").addEventListener("click", async () => {
-    await post("/api/retry-login");
+    await send("/api/retry-login", "POST");
     await tick(true);
   });
+  $("delete-slot").addEventListener("click", async () => {
+    const ok = window.confirm(
+      "Apagar sua instância? O navegador do servidor fecha, o cadastro do jogo é apagado e a vaga fica livre.",
+    );
+    if (!ok) return;
+    const res = await send("/api/slot", "DELETE");
+    if (res && res.ok) render(await res.json());
+    else if (res) showError("account-error", "Não foi possível apagar. Tente de novo.");
+  });
   $("logout").addEventListener("click", async () => {
-    await post("/auth/logout");
+    await send("/auth/logout", "POST");
     window.location.replace("/");
   });
+  bindCredentialsForm("setup-form", "setup-error");
+  bindCredentialsForm("creds-form", "account-error");
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) tick(true);
   });

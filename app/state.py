@@ -145,9 +145,11 @@ class StateStore:
 
 
 def write_json_atomic(path: Path, payload: object) -> None:
+    """Grava com permissão 600 (senha cifrada, hash de sessão): só o usuário do container lê."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False)
         fh.flush()
         os.fsync(fh.fileno())

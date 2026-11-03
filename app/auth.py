@@ -83,7 +83,7 @@ class AuthService:
                 sess = Session(str(value["email"]), str(value["csrf"]), float(value["expires_at"]))
             except (KeyError, TypeError, ValueError):
                 continue
-            if sess.expires_at > now and sess.email in self._settings.admin_email_set:
+            if sess.expires_at > now and sess.email in self._settings.allowed_email_set:
                 self._sessions[key] = sess
 
     # --- fluxo OIDC ---------------------------------------------------------------------------
@@ -140,8 +140,8 @@ class AuthService:
             raise LoginError(exc.code, code_status) from exc
         if identity.nonce is None or not hmac.compare_digest(identity.nonce, flow.nonce):
             raise LoginError("login_invalido", status.HTTP_403_FORBIDDEN)
-        if identity.email not in self._settings.admin_email_set:
-            logger.warning("google login denied for a non-admin account")
+        if identity.email not in self._settings.allowed_email_set:
+            logger.warning("google login denied for a non-allowed account")
             raise LoginError("conta_nao_autorizada", status.HTTP_403_FORBIDDEN)
 
         token = secrets.token_urlsafe(32)
@@ -165,7 +165,7 @@ class AuthService:
         sess = self._sessions.get(_sha(token))
         if sess is None or sess.expires_at <= time.time():
             return None
-        if sess.email not in self._settings.admin_email_set:
+        if sess.email not in self._settings.allowed_email_set:
             return None  # e-mail saiu da allowlist: sessão antiga deixa de valer
         return sess
 

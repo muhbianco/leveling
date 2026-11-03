@@ -4,20 +4,25 @@
 # Imagem: muhrilobianco/leveling-keeper:${LEVELING_TAG} (sha12 do commit; nunca `latest`).
 # Painel: https://leveling.muhbianco.com.br (login Google; só /healthz e a tela de login abertos).
 #
-# Um container: FastAPI + supervisor + Playwright/Chromium com janela num Xvfb + x11vnc só em
-# 127.0.0.1 (a tela remota passa pela ponte autenticada do painel). Mantém a sessão do Leveling
-# Idle aberta quando a chave do painel está ligada; o cliente do jogo roda sem modificação.
+# Um container com até MAX_SLOTS instâncias (uma por jogador liberado): cada uma com Chromium com
+# janela num Xvfb próprio (:99, :100) e x11vnc só em 127.0.0.1 (5900, 5901); a tela remota passa
+# pela ponte autenticada do painel, e cada conta Google só alcança a própria instância. Mantém a
+# sessão do Leveling Idle aberta quando a chave do slot está ligada; o cliente do jogo roda sem
+# modificação. Teto de 2: o jogo derruba todas as contas acima de 2 pelo mesmo IP.
 #
 # Env da stack (via hel1-ops/scripts/portainer-stack-update.py, que reenvia todas as chaves):
 #   LEVELING_TAG       sha12 da imagem (o pipeline troca a cada deploy)
 #   GOOGLE_CLIENT_ID   cliente OAuth "Leveling Keeper" (não é segredo)
-#   ADMIN_EMAILS       e-mails Google que entram no painel (vírgula); vazio = ninguém
+#   ADMIN_EMAILS       dono(s): entram no painel; o primeiro herda a instância de antes dos slots
+#   PLAYER_EMAILS      outros jogadores liberados (vírgula); cada um cadastra o próprio caçador
 # Segredos NÃO ficam no Env: /root/leveling-secrets/secrets.env (GAME_USERNAME, GAME_PASSWORD,
-# GOOGLE_CLIENT_SECRET), criado por infra/install-secrets.sh e montado read-only. O app relê o
-# arquivo a cada ciclo: trocar a senha não pede redeploy.
+# GOOGLE_CLIENT_SECRET, DATA_KEY), criado por infra/install-secrets.sh e montado read-only. O app
+# relê o arquivo a cada ciclo: trocar a senha não pede redeploy. Senhas cadastradas pelo painel
+# ficam no volume cifradas com a DATA_KEY (que não fica no volume).
 #
-# Volume `leveling_data` (/data): perfil do Chromium (token do jogo), chave liga/desliga, eventos e
-# sessões do painel. Fora do backup B2 de propósito: um login novo recupera tudo.
+# Volume `leveling_data` (/data): slots.json, sessions.json e /data/slots/<n>/ (perfil do
+# Chromium, chave liga/desliga, eventos, credenciais cifradas). Fora do backup B2 de propósito:
+# um login novo recupera tudo.
 # =============================================================================
 
 version: "3.8"
@@ -36,6 +41,8 @@ services:
       LOG_LEVEL: INFO
       PUBLIC_URL: https://leveling.muhbianco.com.br
       ADMIN_EMAILS: ${ADMIN_EMAILS:?ADMIN_EMAILS obrigatorio}
+      PLAYER_EMAILS: ${PLAYER_EMAILS:-}
+      MAX_SLOTS: "2"
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID obrigatorio}
       SECRETS_FILE: /run/leveling/secrets.env
       DATA_DIR: /data
@@ -48,12 +55,12 @@ services:
         read_only: true
     networks:
       - chatbot-net
-    # O Chromium fecha a página (o jogo vê o socket fechar limpo) antes do SIGKILL.
+    # Os Chromium fecham a página (o jogo vê o socket fechar limpo) antes do SIGKILL.
     stop_grace_period: 30s
     deploy:
       mode: replicated
       replicas: 1
-      # Um navegador por vez: dois na mesma conta se derrubariam ("outro dispositivo").
+      # Um container por vez: dois na mesma conta se derrubariam ("outro dispositivo").
       update_config:
         order: stop-first
         failure_action: rollback
@@ -61,10 +68,11 @@ services:
         condition: any
         delay: 10s
       resources:
-        # Chromium + WebGL em software (sem GPU). Medir com `docker stats` e ajustar.
+        # Por instância jogando: ~1 núcleo (WebGL em software, sem GPU) e ~750 MB, medidos em
+        # 02/11/2026. Duas instâncias: 2 núcleos / 3 GB.
         limits:
-          cpus: "1.0"
-          memory: 1536M
+          cpus: "2.0"
+          memory: 3072M
         reservations:
           cpus: "0.25"
           memory: 512M

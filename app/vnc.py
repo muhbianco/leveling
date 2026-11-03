@@ -1,8 +1,9 @@
-"""Ponte WebSocket <-> TCP entre o noVNC do painel e o x11vnc (127.0.0.1:5900).
+"""Ponte WebSocket <-> TCP entre o noVNC do painel e o x11vnc do slot (127.0.0.1:5900+N-1).
 
 Faz o papel do websockify, mas atrás da sessão Google do painel: sem sessão (ou com Origin de
-outro site) a conexão é recusada antes de abrir o TCP. Enquanto alguém está na tela remota o
-supervisor entra em modo manual (não recarrega nem loga).
+outro site) a conexão é recusada antes de abrir o TCP, e a porta vem do slot do e-mail da sessão,
+então cada jogador só vê a própria tela. Enquanto alguém está na tela remota o supervisor do slot
+entra em modo manual (não recarrega nem loga).
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from starlette.websockets import WebSocketState
 
 from app.auth import AuthService
 from app.config import Settings
-from app.supervisor import Supervisor
+from app.slots import SlotManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,18 +27,19 @@ POLICY_VIOLATION = 1008
 TRY_AGAIN_LATER = 1013
 
 
-async def bridge(
-    ws: WebSocket, settings: Settings, auth: AuthService, supervisor: Supervisor
-) -> None:
-    if auth.websocket_session(ws) is None:
+async def bridge(ws: WebSocket, settings: Settings, auth: AuthService, slots: SlotManager) -> None:
+    sess = auth.websocket_session(ws)
+    runtime = None if sess is None else slots.for_email(sess.email)
+    if runtime is None:
         await ws.close(code=POLICY_VIOLATION)
         return
+    supervisor = runtime.supervisor
     if supervisor.viewers >= settings.vnc_max_clients:
         await ws.close(code=TRY_AGAIN_LATER)
         return
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(settings.vnc_host, settings.vnc_port), CONNECT_TIMEOUT_S
+            asyncio.open_connection(settings.vnc_host, runtime.vnc_port), CONNECT_TIMEOUT_S
         )
     except (OSError, TimeoutError) as exc:
         logger.warning("vnc unreachable: %s", type(exc).__name__)

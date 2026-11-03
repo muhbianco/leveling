@@ -13,13 +13,12 @@ import math
 import random
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
 
 from playwright.async_api import Error as PlaywrightError
 
-from app.config import Secrets, read_secrets
+from app.config import Secrets
 from app.game import Driver
 from app.policy import (
     SIGNAL_STALE_SECONDS,
@@ -37,7 +36,9 @@ logger = logging.getLogger(__name__)
 
 BACKOFF_BASE_S = 30.0
 BACKOFF_CAP_S = 900.0
-LOGIN_SPACING_S = 60.0
+# Depois de enviar o login, o jogo pode levar mais de 1 min carregando com a tela de login ainda
+# à vista (medido em 02/11: 61 s e 78 s). Tentar de novo antes disso atropela o primeiro login.
+LOGIN_SPACING_S = 120.0
 MAX_LOGINS_BEFORE_LATCH = 3
 HOUR_S = 3600.0
 DAY_S = 86_400.0
@@ -67,6 +68,7 @@ class Status:
     reconnects_24h: int
     remote_viewers: int
     has_credentials: bool
+    game_username: str
     login_latched: bool
     retry_in: float | None
 
@@ -76,14 +78,14 @@ class Supervisor:
         self,
         store: StateStore,
         driver: Driver,
-        secrets_file: Path,
+        credentials: Callable[[], Awaitable[Secrets]],
         tick_seconds: float = 5.0,
         clock: Callable[[], float] = time.monotonic,
         rng: Callable[[], float] = random.random,
     ) -> None:
         self._store = store
         self._driver = driver
-        self._secrets_file = secrets_file
+        self._credentials = credentials
         self._tick_seconds = tick_seconds
         self._clock = clock
         self._rng = rng
@@ -124,12 +126,10 @@ class Supervisor:
 
     async def tick(self) -> Decision:
         async with self._lock:
-            self._secrets = await asyncio.to_thread(read_secrets, self._secrets_file)
+            self._secrets = await self._credentials()
             if self._login_latched and self._secrets.version != self._latched_version:
                 self._reset_login()
-                await self._store.add_event(
-                    "login", "Arquivo de senha mudou: login liberado de novo"
-                )
+                await self._store.add_event("login", "Senha do jogo mudou: login liberado de novo")
 
             obs = await self._driver.observe()
             self._last_obs = obs
@@ -270,6 +270,12 @@ class Supervisor:
         await self._store.add_event("login", "Login liberado de novo pelo painel")
         self.wake()
 
+    async def credentials_changed(self) -> None:
+        """Usuário/senha novos pelo painel: destrava o login (o evento é de quem gravou)."""
+        async with self._lock:
+            self._reset_login()
+        self.wake()
+
     def viewer_joined(self) -> None:
         self._viewers += 1
 
@@ -296,6 +302,7 @@ class Supervisor:
             reconnects_24h=sum(1 for t in self._reconnects if t > now - DAY_S),
             remote_viewers=self._viewers,
             has_credentials=self._secrets.has_game_credentials,
+            game_username=self._secrets.game_username,
             login_latched=self._login_latched,
             retry_in=(
                 round(self._retry_at - now, 1)

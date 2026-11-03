@@ -1,9 +1,13 @@
 # Leveling Keeper
 
 Mantém a sessão do [Leveling Idle](https://levelingidle2d.com.br/jogar) aberta na hel1 enquanto o
-navegador do dono não pode ficar aberto. O painel fica em `https://leveling.muhbianco.com.br`, só
-para os e-mails Google de `ADMIN_EMAILS`.
+navegador do jogador não pode ficar aberto. O painel fica em `https://leveling.muhbianco.com.br`, só
+para os e-mails Google de `ADMIN_EMAILS` (dono) e `PLAYER_EMAILS` (jogadores liberados).
 
+- **Uma instância por jogador, no máximo 2.** O jogador entra com o Google, informa caçador e senha
+  do jogo e ganha a própria instância (Chromium, tela e tela remota próprios). Cada conta Google só
+  vê e controla a própria. O teto de 2 é do jogo: acima de 2 contas pelo mesmo IP, ele derruba
+  todas.
 - **Ligado:** o servidor abre o jogo num Chromium de verdade e fica conectado.
 - **Desligado:** o navegador do servidor fecha.
 - **Desliga sozinho** quando a conta entra em outro aparelho (`session.replaced`). Basta abrir o
@@ -24,8 +28,9 @@ para os e-mails Google de `ADMIN_EMAILS`.
 
 - **Só fica conectado.** Nenhum script injetado na página, nenhum clique dentro do jogo e nenhum
   disfarce: headers, user agent e marcadores de automação ficam como o Chromium manda.
-- **Única interação:** preencher o login quando o token cai, no máximo 1 tentativa por minuto. Depois
-  de 3 tentativas sem entrar, trava até o dono trocar a senha ou clicar "Tentar login de novo".
+- **Única interação:** preencher o login quando o token cai, no máximo 1 tentativa a cada 2 min
+  (o jogo pode levar mais de 1 min carregando depois do login). Depois de 3 tentativas sem entrar,
+  trava até a senha mudar ou o jogador clicar "Tentar login de novo".
 - **Não simula presença nem responde anti-AFK.** Se o jogo encerrar por inatividade
   (`session.idle`), ser desconectado pelo servidor, suspender a conta ou acusar multi-conta por IP,
   o robô **desliga** em vez de insistir.
@@ -36,13 +41,17 @@ para os e-mails Google de `ADMIN_EMAILS`.
 
 ## Arquitetura
 
-Um container:
+Um container, até 2 slots (`app/slots.py`):
 
-- FastAPI (painel, API e noVNC atrás da sessão Google).
-- Supervisor asyncio (`app/supervisor.py` executa; `app/policy.py` decide, função pura).
-- Playwright → Chromium com janela num Xvfb (`:99`).
-- x11vnc só em `127.0.0.1:5900`. A ponte `app/vnc.py` liga o WebSocket `/vnc/ws` a ele, depois de
-  conferir sessão e Origin.
+- FastAPI (painel, API e noVNC atrás da sessão Google). O slot de cada requisição sai do e-mail da
+  sessão, nunca de um id vindo do navegador.
+- Por slot: supervisor asyncio (`app/supervisor.py` executa; `app/policy.py` decide, função pura),
+  Playwright → Chromium com janela num Xvfb próprio (slot 1 em `:99`, slot 2 em `:100`) e x11vnc
+  só em `127.0.0.1` (5900, 5901). A ponte `app/vnc.py` liga o WebSocket `/vnc/ws` ao x11vnc do
+  slot da sessão, depois de conferir sessão e Origin.
+- Credenciais: o jogador cadastra pelo painel; a senha fica no volume cifrada com Fernet, e a
+  chave (`DATA_KEY`) fica só no arquivo de segredos da hel1. O dono sem cadastro usa o
+  `GAME_USERNAME`/`GAME_PASSWORD` do arquivo de segredos, como antes dos slots.
 
 Sinais, todos passivos:
 
@@ -53,11 +62,14 @@ Sinais, todos passivos:
 - **Textos dos bloqueios:** vêm das respostas de `/locales/pt-BR/{auth,errors}.json` que o próprio
   jogo baixa. Assim não quebram se o texto mudar.
 
-Estado em `/data`:
+Estado em `/data` (arquivos com permissão 600):
 
-- `state.json`: chave, motivo e últimos 200 eventos.
+- `slots.json`: quem ocupa cada vaga.
 - `sessions.json`: hash das sessões do painel.
-- `profile/`: perfil do Chromium.
+- `slots/<n>/`: `state.json` (chave, motivo e últimos 200 eventos), `profile/` (perfil do Chromium)
+  e `credentials.json` (caçador + senha cifrada).
+- O layout de antes dos slots (`/data/state.json` + `/data/profile`) vira o slot 1 do primeiro
+  e-mail de `ADMIN_EMAILS` no primeiro boot, com eventos e token do jogo preservados.
 
 ## Desenvolvimento
 
@@ -82,8 +94,11 @@ wsl -e docker build -t leveling-keeper:local .
   `muhrilobianco/leveling-keeper:<sha12>`.
 - **Deploy:** push na `main` = deploy (Woodpecker: `.woodpecker/ci.yaml` → `deploy.yaml` →
   `infra/deploy.sh`).
-- **Volume:** `leveling_data` fica **fora do backup B2** de propósito. É só perfil, chave e eventos,
-  e um login novo recupera tudo.
+- **Volume:** `leveling_data` fica **fora do backup B2** de propósito. É só perfil, chave, eventos e
+  credenciais cifradas; um login novo recupera tudo.
+- **Env da stack:** `LEVELING_TAG`, `GOOGLE_CLIENT_ID`, `ADMIN_EMAILS` e `PLAYER_EMAILS`. Mudar
+  jogadores: `portainer-stack-update.py --stack leveling --yaml ... --set-env PLAYER_EMAILS=...`
+  (reinicia o container; as instâncias ligadas voltam sozinhas).
 
 ### Primeira vez
 
@@ -93,7 +108,8 @@ wsl -e docker build -t leveling-keeper:local .
 2. **Woodpecker:** ativar `muhbianco/leveling` (Trusted → Volumes) e rodar o pipeline da `main`.
    O passo `build` publica `muhrilobianco/leveling-keeper:<sha12>`. O `deploy` falha até a stack
    existir; é esperado.
-3. **Clone e segredos na hel1** (o script pergunta cada valor sem eco; Enter mantém o atual):
+3. **Clone e segredos na hel1** (o script pergunta cada valor sem eco; Enter mantém o atual; a
+   `DATA_KEY` é gerada sozinha, uma vez):
    ```bash
    git clone https://github.com/muhbianco/leveling.git /usr/src/leveling
    bash /usr/src/leveling/infra/install-secrets.sh
@@ -111,8 +127,11 @@ wsl -e docker build -t leveling-keeper:local .
 
 | Tarefa | Como |
 |---|---|
-| Trocar a senha do jogo ou o segredo Google | rodar `install-secrets.sh` de novo; o app relê sozinho |
+| Trocar caçador/senha de um jogador | o próprio jogador, em "Conta do jogo" no painel |
+| Trocar a senha do dono (arquivo) ou o segredo Google | rodar `install-secrets.sh` de novo; o app relê sozinho |
+| Garantir a `DATA_KEY` sem perguntar nada | `install-secrets.sh --ensure-data-key` (nunca troca uma existente) |
+| Liberar a vaga de alguém | o próprio jogador em "Apagar minha instância"; tirar o e-mail de `PLAYER_EMAILS` só para de rodar a instância |
 | Rollback | `infra/deploy.sh <sha12 anterior>` (com `PORTAINER_STACK_UPDATE` apontando para o script) |
 | Desligar tudo | `docker service scale leveling_keeper=0` (religar com `=1`) |
-| Medir consumo | `docker stats $(docker ps -q -f name=leveling_keeper)`. Limite atual: 1 CPU / 1536 MB |
+| Medir consumo | `docker stats $(docker ps -q -f name=leveling_keeper)`. ~1 núcleo e ~750 MB por instância jogando; limite 2 CPU / 3 GB |
 | Logs | `docker service logs leveling_keeper`. Nunca contêm senha; o login loga só o tipo do erro |

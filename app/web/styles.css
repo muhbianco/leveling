@@ -107,3 +107,20 @@ h2 { font-size: 1rem; margin: 0 0 8px; }
 
 body.login { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
 body.login .card { max-width: 380px; width: 100%; text-align: center; }
+
+.small { font-size: 0.8rem; margin: 2px 0 0; }
+
+.form { display: grid; gap: 12px; margin-top: 12px; }
+.form label { display: grid; gap: 4px; font-size: 0.9rem; color: var(--muted); }
+.form input {
+  font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+}
+.form input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.form input:disabled, .form button:disabled { opacity: 0.5; }
+
+details { margin-top: 8px; }
+summary { cursor: pointer; color: var(--accent); }
+
+.button.danger { color: var(--bad); border-color: var(--bad); }
+#panel { display: grid; gap: 16px; }

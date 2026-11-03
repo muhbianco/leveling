@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from app.config import Secrets, read_secrets
 from app.policy import MAX_ATTEMPTS_PER_HOUR, Action, BlockKind, Observation, Phase, Screen
 from app.state import OffReason, StateStore
 from app.supervisor import LOGIN_SPACING_S, MAX_LOGINS_BEFORE_LATCH, Supervisor
@@ -73,7 +74,10 @@ def store(tmp_path: Path) -> StateStore:
 def sup(
     store: StateStore, driver: FakeDriver, secrets_file: Path, clock: FakeClock
 ) -> Iterator[Supervisor]:
-    yield Supervisor(store, driver, secrets_file, clock=clock, rng=lambda: 0.5)
+    async def credentials() -> Secrets:
+        return read_secrets(secrets_file)
+
+    yield Supervisor(store, driver, credentials, clock=clock, rng=lambda: 0.5)
 
 
 PLAYING = Observation(Screen.GAME, signal_age=1.0, screen_age=600.0)
