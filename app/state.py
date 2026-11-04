@@ -84,9 +84,13 @@ class StateStore:
             self._events.clear()
 
     async def set_power(
-        self, on: bool, reason: OffReason = OffReason.MANUAL, detail: str = ""
+        self,
+        on: bool,
+        reason: OffReason = OffReason.MANUAL,
+        detail: str = "",
+        message: str | None = None,
     ) -> bool:
-        """Devolve True se mudou alguma coisa."""
+        """Devolve True se mudou alguma coisa. `message` troca o texto padrão do evento."""
         async with self._lock:
             current = self._power
             if on and current.desired_on:
@@ -100,18 +104,18 @@ class StateStore:
                 changed_at=utcnow_iso(),
             )
             if on:
-                message = "Ligado: o servidor assume a sessão"
+                text = "Ligado: o servidor assume a sessão"
                 kind = "ligado"
             elif reason is OffReason.REPLACED:
-                message = "Desligado sozinho: a conta entrou em outro aparelho"
+                text = "Desligado sozinho: a conta entrou em outro aparelho"
                 kind = "assumido"
             elif reason is OffReason.ERROR:
-                message = f"Desligado por erro: {detail[:300]}" if detail else "Desligado por erro"
+                text = f"Desligado por erro: {detail[:300]}" if detail else "Desligado por erro"
                 kind = "erro"
             else:
-                message = "Desligado"
+                text = "Desligado"
                 kind = "desligado"
-            self._events.append(Event(utcnow_iso(), kind, message))
+            self._events.append(Event(utcnow_iso(), kind, message or text))
             await self._save()
             return True
 

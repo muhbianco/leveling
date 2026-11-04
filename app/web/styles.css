@@ -122,6 +122,21 @@ h2 { font-size: 1rem; margin: 0 0 8px; }
 .events .assumido span, .events .desligado span { color: var(--muted); }
 .events .erro span { color: var(--bad); }
 .events .jogando span { color: var(--ok); }
+.events .confirmar span { color: var(--warn); }
+
+/* Confirmação antes de entrar de novo: por cima de tudo, fecha sozinho quando a janela acaba. */
+.modal {
+  position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 16px;
+  background: rgb(0 0 0 / 45%);
+}
+.modal-card {
+  width: min(440px, 100%); background: var(--card); color: var(--text);
+  border: 1px solid var(--line); border-radius: 14px; padding: 18px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 30%);
+}
+.modal-card h2 { font-size: 1.05rem; }
+.modal-card p { margin: 0; }
+.countdown { color: var(--warn); font-variant-numeric: tabular-nums; }
 .log {
   margin-top: 10px; max-height: 13rem; overflow-y: auto; overscroll-behavior: contain;
   padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;

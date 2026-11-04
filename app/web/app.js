@@ -19,6 +19,7 @@ const PHASES = {
   manutencao: ["Jogo em manutenção", "warn"],
   precisa_login: ["Precisa de login", "bad"],
   assumido: ["Assumido por outro aparelho", "off"],
+  confirmando: ["Esperando sua confirmação", "warn"],
   erro: ["Desligado por erro", "bad"],
 };
 
@@ -47,6 +48,9 @@ let lastShot = 0;
 let busy = false;
 let eventsSig = "";
 let accountsSig = "";
+let confirmUntil = 0;
+let confirmTimer = null;
+const BASE_TITLE = document.title;
 
 const timeFmt = new Intl.DateTimeFormat("pt-BR", {
   timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
@@ -167,6 +171,34 @@ function render(s) {
   $("panel").hidden = !hasSlot;
   if (hasSlot) renderPanel(s);
   else renderSetup(s);
+  renderConfirm(s);
+}
+
+// A sessão caiu depois de jogar: o servidor segura o login por alguns segundos à espera do
+// dono. A contagem é local (a partir do confirm_in do último status); o título da aba avisa
+// mesmo com o painel em segundo plano.
+function renderConfirm(s) {
+  const modal = $("confirm-modal");
+  const open = Boolean(s.slot) && s.desired_on && typeof s.confirm_in === "number";
+  const wasOpen = !modal.hidden;
+  if (open) {
+    confirmUntil = Date.now() + s.confirm_in * 1000;
+    if (!confirmTimer) confirmTimer = setInterval(updateCountdown, 250);
+    updateCountdown();
+  } else {
+    confirmUntil = 0;
+    if (confirmTimer) clearInterval(confirmTimer);
+    confirmTimer = null;
+    document.title = BASE_TITLE;
+  }
+  modal.hidden = !open;
+  if (open && !wasOpen) $("confirm-elsewhere").focus();
+}
+
+function updateCountdown() {
+  const left = Math.max(0, Math.ceil((confirmUntil - Date.now()) / 1000));
+  $("confirm-count").textContent = String(left);
+  document.title = left > 0 ? `(${left} s) Confirme no keeper` : "Keeper reconectando…";
 }
 
 async function refreshStatus() {
@@ -326,8 +358,9 @@ function bindEventsBox() {
 }
 
 async function tick(force = false) {
-  if (document.hidden && !force) return;
+  // O status roda mesmo com a aba escondida (é leve): é ele que abre a confirmação.
   await refreshStatus();
+  if (document.hidden && !force) return;
   await refreshEvents();
   await refreshShot(force);
 }
@@ -363,6 +396,17 @@ document.addEventListener("DOMContentLoaded", () => {
   bindCredentialsForm("setup-form", "setup-error");
   bindCredentialsForm("creds-form", "account-error");
   $("accounts").addEventListener("click", onAccountAction);
+  $("confirm-elsewhere").addEventListener("click", async () => {
+    const res = await send("/api/confirm/elsewhere", "POST");
+    if (res && res.ok) render(await res.json());
+    await refreshEvents();
+  });
+  $("confirm-reconnect").addEventListener("click", async () => {
+    const res = await send("/api/confirm/reconnect", "POST");
+    if (res && res.ok) render(await res.json());
+    else await refreshStatus();
+    await refreshEvents();
+  });
   bindEventsBox();
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) tick(true);

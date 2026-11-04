@@ -24,6 +24,7 @@ from app.auth import SESSION_COOKIE, AuthService
 from app.config import Settings
 from app.main import create_app
 from app.oidc import OidcClient
+from app.policy import BlockKind, Observation, Screen
 from app.slots import (
     AccountStore,
     SlotManager,
@@ -431,6 +432,8 @@ def test_delete_frees_the_slot(client: TestClient, google: FakeGoogle, world: Wo
         ("post", "/api/power", {"on": True}),
         ("post", "/api/reload", None),
         ("post", "/api/retry-login", None),
+        ("post", "/api/confirm/elsewhere", None),
+        ("post", "/api/confirm/reconnect", None),
     ],
 )
 def test_actions_without_instance_conflict(
@@ -635,6 +638,67 @@ def test_failed_switch_keeps_the_account(
         "erro",
         "Troca para alt falhou: a conta anterior continua",
     )
+
+
+# --- confirmação antes de entrar de novo -----------------------------------------------------
+
+
+def open_confirmation(client: TestClient, google: FakeGoogle, world: World) -> str:
+    """Jogador liga, o robô chega a jogar e a sessão cai com "Sessão expirada"."""
+    csrf = login(client, google, PLAYER)
+    create_instance(client, csrf, username="pug")
+    assert client.post("/api/power", json={"on": True}, headers=write(csrf)).status_code == 200
+    runtime = world.slots.for_email(PLAYER)
+    assert runtime is not None
+    driver = world.drivers[1]
+
+    async def play_then_expire() -> None:
+        await runtime.supervisor.tick()  # abre
+        driver.obs = Observation(Screen.GAME, signal_age=1.0, screen_age=600.0)
+        await runtime.supervisor.tick()
+        driver.obs = Observation(
+            Screen.BLOCK, block_kind=BlockKind.RELOGIN, block_text="Sessão expirada"
+        )
+        await runtime.supervisor.tick()
+
+    asyncio.run(play_then_expire())
+    return csrf
+
+
+def test_status_shows_the_confirmation_window(
+    client: TestClient, google: FakeGoogle, world: World
+) -> None:
+    open_confirmation(client, google, world)
+    body = client.get("/api/status").json()
+    assert body["phase"] == "confirmando"
+    assert 0 < body["confirm_in"] <= 15
+    assert world.drivers[1].logins == []
+
+
+def test_confirm_elsewhere_turns_off_without_logging_in(
+    client: TestClient, google: FakeGoogle, world: World
+) -> None:
+    csrf = open_confirmation(client, google, world)
+    res = client.post("/api/confirm/elsewhere", headers=write(csrf))
+    assert res.status_code == 200
+    body = res.json()
+    assert (body["desired_on"], body["off_reason"], body["confirm_in"]) == (
+        False,
+        "assumido",
+        None,
+    )
+    assert world.drivers[1].logins == []
+
+
+def test_confirm_reconnect_skips_the_wait(
+    client: TestClient, google: FakeGoogle, world: World
+) -> None:
+    csrf = open_confirmation(client, google, world)
+    res = client.post("/api/confirm/reconnect", headers=write(csrf))
+    assert res.status_code == 200
+    assert res.json()["confirm_in"] is None
+    again = client.post("/api/confirm/reconnect", headers=write(csrf))
+    assert (again.status_code, again.json()["detail"]) == (409, "sem_confirmacao")
 
 
 def test_account_routes_without_instance(client: TestClient, google: FakeGoogle) -> None:

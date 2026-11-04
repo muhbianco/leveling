@@ -109,5 +109,19 @@
       </section>
     </div>
   </main>
+
+  <div class="modal" id="confirm-modal" role="alertdialog" aria-modal="true"
+       aria-labelledby="confirm-title" aria-describedby="confirm-text" hidden>
+    <div class="modal-card">
+      <h2 id="confirm-title">A sessão do keeper caiu no meio do jogo</h2>
+      <p id="confirm-text">Foi você entrando no jogo em outro aparelho? Sem resposta, o keeper
+        entra de novo em <strong class="countdown" id="confirm-count">15</strong> s, e isso derruba
+        o outro aparelho.</p>
+      <div class="actions">
+        <button type="button" class="button primary" id="confirm-elsewhere">Sou eu, desliga o keeper</button>
+        <button type="button" class="button" id="confirm-reconnect">Não sou eu, reconectar</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

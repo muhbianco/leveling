@@ -255,6 +255,19 @@ def build_router(settings: Settings) -> APIRouter:
         await runtime.supervisor.request_reload()
         return Response(status_code=status.HTTP_202_ACCEPTED)
 
+    @router.post("/api/confirm/elsewhere")
+    async def confirm_elsewhere(svc: Svc, sess: WriteSession) -> JSONResponse:
+        """Modal: "sou eu, estou jogando em outro aparelho". Desliga sem entrar com a senha."""
+        await _runtime(svc, sess).supervisor.confirm_elsewhere()
+        return await _status_response(svc, sess)
+
+    @router.post("/api/confirm/reconnect")
+    async def confirm_reconnect(svc: Svc, sess: WriteSession) -> JSONResponse:
+        """Modal: "não sou eu". Entra de novo sem esperar o fim da janela."""
+        if not await _runtime(svc, sess).supervisor.reconnect_now():
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="sem_confirmacao")
+        return await _status_response(svc, sess)
+
     @router.post("/api/retry-login", status_code=status.HTTP_202_ACCEPTED)
     async def retry_login(svc: Svc, sess: WriteSession) -> Response:
         await _runtime(svc, sess).supervisor.retry_login()

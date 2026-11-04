@@ -24,6 +24,10 @@ LOADING_GRACE_SECONDS = 90.0  # página aberta sem chegar a login, bloqueio ou j
 BLOCK_GRACE_SECONDS = 60.0  # bloqueio desconhecido: espera antes de recarregar
 MAINTENANCE_GRACE_SECONDS = 600.0  # manutenção: o cliente volta sozinho; depois disso, recarrega
 MAX_ATTEMPTS_PER_HOUR = 8  # aberturas/recargas sem chegar a jogar: passou disso, desliga
+# Token caiu depois de já ter jogado: quase sempre é o dono entrando em outro aparelho (o jogo às
+# vezes mostra "Sessão expirada" em vez de "acessada em outro dispositivo"). Entrar com a senha na
+# hora derrubaria ele; o painel pede confirmação e, sem resposta nesse prazo, o robô entra de novo.
+CONFIRM_WINDOW_SECONDS = 15.0
 
 
 class Phase(StrEnum):
@@ -35,6 +39,7 @@ class Phase(StrEnum):
     MANUTENCAO = "manutencao"
     PRECISA_LOGIN = "precisa_login"
     ASSUMIDO = "assumido"
+    CONFIRMANDO = "confirmando"  # segurando o login à espera do dono (CONFIRM_WINDOW_SECONDS)
     ERRO = "erro"
 
 
@@ -61,6 +66,15 @@ class Action(StrEnum):
     LOGIN = "login"  # preenche usuário e senha e envia
     CLOSE = "close"  # fecha o navegador
     TURN_OFF = "turn_off"  # desliga a chave e fecha
+    HOLD = "hold"  # segura o login e abre a janela de confirmação no painel
+
+
+class Relogin(StrEnum):
+    """Pode entrar com a senha agora? Decidido pelo supervisor, que sabe se já jogou."""
+
+    FREE = "free"  # primeiro login depois de ligar, ou a janela passou
+    ASK = "ask"  # já jogou e o token caiu: abrir a janela de confirmação
+    WAIT = "wait"  # janela aberta: esperando o dono
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +97,7 @@ class Context:
     login_allowed: bool = True  # espaçamento entre tentativas de login
     retry_ready: bool = True  # backoff de abrir/recarregar vencido
     attempts_last_hour: int = 0
+    relogin: Relogin = Relogin.FREE
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +148,12 @@ def decide(obs: Observation, ctx: Context) -> Decision:
             return Decision(Action.NONE, Phase.PRECISA_LOGIN, "sem usuário e senha configurados")
         if ctx.login_latched:
             return Decision(Action.NONE, Phase.PRECISA_LOGIN, "login recusado; confira a senha")
-        if ctx.manual or not ctx.login_allowed:
+        if ctx.manual:
+            return Decision(Action.NONE, Phase.ENTRANDO)
+        held = _hold_relogin(ctx, "a sessão caiu depois de jogar")
+        if held is not None:
+            return held
+        if not ctx.login_allowed:
             return Decision(Action.NONE, Phase.ENTRANDO)
         return Decision(Action.LOGIN, Phase.ENTRANDO, "token caiu; entrando de novo")
 
@@ -151,6 +171,14 @@ def decide(obs: Observation, ctx: Context) -> Decision:
     return Decision(Action.NONE, Phase.ABRINDO)
 
 
+def _hold_relogin(ctx: Context, reason: str) -> Decision | None:
+    if ctx.relogin is Relogin.ASK:
+        return Decision(Action.HOLD, Phase.CONFIRMANDO, reason)
+    if ctx.relogin is Relogin.WAIT:
+        return Decision(Action.NONE, Phase.CONFIRMANDO, reason)
+    return None
+
+
 def _decide_block(obs: Observation, ctx: Context) -> Decision:
     text = obs.block_text[:200]
     match obs.block_kind:
@@ -160,7 +188,11 @@ def _decide_block(obs: Observation, ctx: Context) -> Decision:
         case BlockKind.STOP:
             return Decision(Action.TURN_OFF, Phase.ERRO, text, OffReason.ERROR)
         case BlockKind.RELOGIN:
-            # Recarregar sem token cai na tela de login; nenhum clique no bloqueio.
+            # Recarregar sem token cai na tela de login; nenhum clique no bloqueio. A janela de
+            # confirmação abre já aqui, para o dono ter os 15 s desde a queda.
+            held = None if ctx.manual else _hold_relogin(ctx, text)
+            if held is not None:
+                return held
             return _gated(Action.RELOAD, Phase.ENTRANDO, ctx, text)
         case BlockKind.MAINTENANCE:
             if obs.screen_age > MAINTENANCE_GRACE_SECONDS:

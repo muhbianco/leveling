@@ -27,6 +27,10 @@ para os e-mails Google de `ADMIN_EMAILS` (dono) e `PLAYER_EMAILS` (jogadores lib
   continuar conectado.
 - **Uma sessão por conta:** entrar em outro aparelho derruba a anterior ("Sua conta foi acessada em
   outro dispositivo"). A sessão derrubada não reconecta sozinha.
+- **Às vezes a sessão derrubada vê "Sessão expirada"** (`errors.session.expired`) em vez de "acessada
+  em outro dispositivo". Foi o que aconteceu nas 3 vezes registradas até 04/11/2026: duas do dono e
+  uma do pugtimothy, sempre com o jogador voltando ao jogo. Entrar com a senha nessa hora derruba o
+  jogador.
 - **Login:** usuário e senha pelo WebSocket, sem captcha (o Turnstile é só do cadastro).
 - **Token:** fica em `leveling.session-token` no localStorage. Com o perfil persistente em `/data`,
   recarregar a página retoma a sessão sem senha.
@@ -38,6 +42,13 @@ para os e-mails Google de `ADMIN_EMAILS` (dono) e `PLAYER_EMAILS` (jogadores lib
 - **Única interação:** preencher o login quando o token cai, no máximo 1 tentativa a cada 2 min
   (o jogo pode levar mais de 1 min carregando depois do login). Depois de 3 tentativas sem entrar,
   trava até a senha mudar ou o jogador clicar "Tentar login de novo".
+- **Confirmação antes de entrar de novo.** O primeiro login depois de ligar é livre. Se o token
+  cair depois de o robô já ter jogado nesse ciclo, ele segura o login por 15 s e abre um modal no
+  painel. O título da aba conta os segundos, mesmo com a aba em segundo plano.
+  - "Sou eu, desliga o keeper": desliga sem entrar.
+  - "Não sou eu, reconectar": entra na hora.
+  - Sem resposta: entra de novo.
+  Ninguém vê o outro aparelho, então a dúvida não se resolve sozinha.
 - **Não simula presença nem responde anti-AFK.** Se o jogo encerrar por inatividade
   (`session.idle`), ser desconectado pelo servidor, suspender a conta ou acusar multi-conta por IP,
   o robô **desliga** em vez de insistir.
@@ -70,6 +81,10 @@ Sinais, todos passivos:
   de 90 s = recarrega.
 - **DOM:** a sonda só lê. `.slScreen.slAuth` é login, `.slScreen.slBlock` é bloqueio e
   `#game canvas` é jogo.
+- **Sonda sem resposta:** acontece com a CPU no teto (em 04/11/2026, 2,08 de 2 núcleos e 82% dos
+  períodos estrangulados). Se a tela era de jogo e o WebSocket continua mandando quadros, a tela
+  continua sendo de jogo. Antes ela virava "carregando", a fase pulava jogando ↔ abrindo a cada
+  poucos segundos e o jogo era recarregado depois de 90 s.
 - **Textos dos bloqueios:** vêm das respostas de `/locales/pt-BR/{auth,errors}.json` que o próprio
   jogo baixa. Assim não quebram se o texto mudar.
 

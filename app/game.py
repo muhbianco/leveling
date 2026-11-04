@@ -23,7 +23,7 @@ from playwright.async_api import BrowserContext, Page, Playwright, Response, Web
 from playwright.async_api import Error as PlaywrightError
 
 from app.config import Settings
-from app.policy import BlockMatcher, Observation, Screen, locale_texts
+from app.policy import SIGNAL_STALE_SECONDS, BlockMatcher, Observation, Screen, locale_texts
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +268,11 @@ class GameDriver:
             screen = Screen.LOGIN
         elif isinstance(raw, dict) and raw.get("canvas"):
             screen = Screen.GAME
+        elif raw is None and self._screen is Screen.GAME and _fresh(signal_age):
+            # Sonda sem resposta com o jogo na tela e o servidor mandando quadros: é a página
+            # ocupada (CPU no teto), não carregando. Contar como carregando fazia a fase pular
+            # jogando <-> abrindo a cada poucos segundos e recarregar o jogo à toa depois de 90 s.
+            screen = Screen.GAME
         else:
             screen = Screen.LOADING
         self._set_screen(screen)
@@ -301,6 +306,10 @@ class GameDriver:
         if page is None or self._gone or page.is_closed():
             return None
         return await page.screenshot(type="jpeg", quality=60, timeout=SCREENSHOT_TIMEOUT_MS)
+
+
+def _fresh(signal_age: float | None) -> bool:
+    return signal_age is not None and signal_age <= SIGNAL_STALE_SECONDS
 
 
 def _remove_profile(profile: Path) -> None:

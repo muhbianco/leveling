@@ -62,6 +62,7 @@ def runtime_factory(
             driver,
             credentials_provider(cfg, accounts, record),
             tick_seconds=cfg.tick_seconds,
+            name=f"slot {record.id}",
         )
         task = asyncio.create_task(supervisor.run(), name=f"supervisor-{record.id}")
         task.add_done_callback(_log_supervisor_end)
