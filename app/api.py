@@ -11,6 +11,7 @@ from typing import Annotated, Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
+from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from playwright.async_api import Error as PlaywrightError
 from pydantic import BaseModel, Field, field_validator
@@ -25,7 +26,7 @@ from app.auth import (
     Session,
 )
 from app.config import Settings
-from app.slots import DataKeyError, SlotFullError, SlotManager, SlotRuntime
+from app.slots import ACCOUNT_ID_PATTERN, MAX_ACCOUNTS, SlotError, SlotManager, SlotRuntime
 from app.vnc import bridge
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -40,6 +41,12 @@ PAGE_HEADERS = {
         "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     ),
     "Referrer-Policy": "no-referrer",
+}
+
+# Código de recusa do domínio (SlotError.code) -> status HTTP. Fora da tabela: 409.
+SLOT_ERROR_STATUS = {
+    "sem_chave": status.HTTP_503_SERVICE_UNAVAILABLE,
+    "conta_nao_encontrada": status.HTTP_404_NOT_FOUND,
 }
 
 LOGIN_ERRORS = {
@@ -63,7 +70,7 @@ class PowerIn(BaseModel):
     on: bool
 
 
-class CredentialsIn(BaseModel):
+class AccountIn(BaseModel):
     # Nome de caçador (ou e-mail da conta) e senha do jogo. A senha nunca volta em resposta.
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=1, max_length=128, repr=False)
@@ -90,6 +97,7 @@ def services(request: Request) -> Services:
 
 
 Svc = Annotated[Services, Depends(services)]
+AccountId = Annotated[str, PathParam(pattern=ACCOUNT_ID_PATTERN)]
 
 
 def read_session(request: Request, svc: Svc) -> Session:
@@ -102,6 +110,10 @@ def write_session(request: Request, svc: Svc) -> Session:
 
 ReadSession = Annotated[Session, Depends(read_session)]
 WriteSession = Annotated[Session, Depends(write_session)]
+
+
+def _refused(exc: SlotError) -> HTTPException:
+    return HTTPException(SLOT_ERROR_STATUS.get(exc.code, status.HTTP_409_CONFLICT), detail=exc.code)
 
 
 def _runtime(svc: Services, sess: Session) -> SlotRuntime:
@@ -196,14 +208,32 @@ def build_router(settings: Settings) -> APIRouter:
     async def get_status(svc: Svc, sess: ReadSession) -> JSONResponse:
         return await _status_response(svc, sess)
 
-    @router.put("/api/slot/credentials")
-    async def save_credentials(body: CredentialsIn, svc: Svc, sess: WriteSession) -> JSONResponse:
+    @router.post("/api/accounts")
+    async def save_account(body: AccountIn, svc: Svc, sess: WriteSession) -> JSONResponse:
+        """Conta nova (ou senha nova de um caçador da lista). Sem instância, cria a instância."""
         try:
-            await svc.slots.save_credentials(sess.email, body.username, body.password)
-        except SlotFullError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, detail="sem_vaga") from exc
-        except DataKeyError as exc:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="sem_chave") from exc
+            await svc.slots.save_account(sess.email, body.username, body.password)
+        except SlotError as exc:
+            raise _refused(exc) from exc
+        return await _status_response(svc, sess)
+
+    @router.post("/api/accounts/{account_id}/activate")
+    async def activate_account(account_id: AccountId, svc: Svc, sess: WriteSession) -> JSONResponse:
+        try:
+            await svc.slots.activate_account(sess.email, account_id)
+        except SlotError as exc:
+            raise _refused(exc) from exc
+        except OSError as exc:
+            # Perfil não saiu do disco: a conta não troca (o navegador reabre na anterior).
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="troca_falhou") from exc
+        return await _status_response(svc, sess)
+
+    @router.delete("/api/accounts/{account_id}")
+    async def remove_account(account_id: AccountId, svc: Svc, sess: WriteSession) -> JSONResponse:
+        try:
+            await svc.slots.remove_account(sess.email, account_id)
+        except SlotError as exc:
+            raise _refused(exc) from exc
         return await _status_response(svc, sess)
 
     @router.delete("/api/slot")
@@ -287,11 +317,15 @@ async def _status_response(svc: Services, sess: Session) -> JSONResponse:
     }
     runtime = svc.slots.for_email(sess.email)
     if runtime is not None:
-        username, source = await svc.slots.credential_info(runtime)
+        accounts = await svc.slots.accounts_view(runtime)
         fields = asdict(runtime.supervisor.status())
         fields.pop("game_username", None)
         payload.update(fields)
-        payload["slot"] = {"id": runtime.record.id, "username": username, "credentials": source}
+        payload["slot"] = {
+            "id": runtime.record.id,
+            "accounts": [asdict(a) for a in accounts],
+            "max_accounts": MAX_ACCOUNTS,
+        }
         payload["vnc_url"] = f"/vnc/vnc.html?{NOVNC_QUERY}"
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 

@@ -13,7 +13,7 @@ import math
 import random
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
 from playwright.async_api import Error as PlaywrightError
@@ -275,6 +275,20 @@ class Supervisor:
         async with self._lock:
             self._reset_login()
         self.wake()
+
+    @contextlib.asynccontextmanager
+    async def hold(self) -> AsyncIterator[None]:
+        """Segura o laço (nenhum ciclo roda no meio) para quem vai trocar a conta: lá dentro o
+        chamador fecha o navegador e grava a conta nova. Backoff e orçamento de login eram da conta
+        anterior e zeram; ao sair, o próximo ciclo já lê a conta nova."""
+        try:
+            async with self._lock:
+                self._reset_run()
+                self._reset_login()
+                yield
+        finally:
+            # Deu certo ou não, o navegador pode ter fechado: o próximo ciclo vem já.
+            self.wake()
 
     def viewer_joined(self) -> None:
         self._viewers += 1

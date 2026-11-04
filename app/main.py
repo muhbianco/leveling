@@ -22,7 +22,7 @@ from app.display import Display
 from app.game import GameDriver
 from app.oidc import OidcClient
 from app.slots import (
-    CredentialStore,
+    AccountStore,
     RuntimeFactory,
     SlotManager,
     SlotRecord,
@@ -45,7 +45,7 @@ def _log_supervisor_end(task: asyncio.Task[None]) -> None:
 
 
 def runtime_factory(
-    cfg: Settings, pw: Playwright, registry: SlotRegistry, creds: CredentialStore
+    cfg: Settings, pw: Playwright, registry: SlotRegistry, accounts: AccountStore
 ) -> RuntimeFactory:
     async def build(record: SlotRecord) -> SlotRuntime:
         slot_dir = registry.slot_dir(record.id)
@@ -60,7 +60,7 @@ def runtime_factory(
         supervisor = Supervisor(
             store,
             driver,
-            credentials_provider(cfg, creds, record),
+            credentials_provider(cfg, accounts, record),
             tick_seconds=cfg.tick_seconds,
         )
         task = asyncio.create_task(supervisor.run(), name=f"supervisor-{record.id}")
@@ -83,8 +83,8 @@ def create_app(settings: Settings | None = None, prebuilt: Services | None = Non
 
         pw = await async_playwright().start()
         registry = SlotRegistry(cfg.data_dir, cfg.max_slots)
-        creds = CredentialStore(registry)
-        slots = SlotManager(cfg, registry, creds, runtime_factory(cfg, pw, registry, creds))
+        accounts = AccountStore(registry)
+        slots = SlotManager(cfg, registry, accounts, runtime_factory(cfg, pw, registry, accounts))
         await slots.start()
         auth = AuthService(cfg, OidcClient(cfg))
         await auth.load()

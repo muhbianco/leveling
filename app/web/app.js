@@ -7,6 +7,8 @@
 const TZ = "America/Sao_Paulo";
 const STATUS_EVERY_MS = 5000;
 const SHOT_EVERY_MS = 30000;
+const EVENTS_LIMIT = 100;
+const EVENTS_OPEN_KEY = "lk.events.open";
 
 const PHASES = {
   desligado: ["Desligado", "off"],
@@ -21,13 +23,21 @@ const PHASES = {
 };
 
 const SOURCES = {
-  painel: "cadastrado neste painel",
-  servidor: "do arquivo de segredos do servidor",
+  painel: "cadastrada neste painel",
+  servidor: "arquivo de segredos do servidor",
 };
 
-const SAVE_ERRORS = {
+const ERRORS = {
   sem_vaga: "Sem vaga: o servidor já roda o máximo de instâncias.",
   sem_chave: "O servidor ainda não tem a chave para guardar senhas. Avise o dono.",
+  sem_instancia: "Sua instância não existe mais. Atualize a página.",
+  contas_demais: "Limite de contas cadastradas. Remova uma antes de adicionar outra.",
+  conta_em_uso:
+    "Essa conta já está ativa na outra instância deste servidor: o jogo derrubaria as duas. Troque a conta de lá antes.",
+  conta_ativa: "Essa é a conta em uso. Troque para outra antes de remover.",
+  conta_do_servidor: "Essa conta vem do arquivo de segredos do servidor e não sai pelo painel.",
+  conta_nao_encontrada: "Conta não encontrada. Atualize a página.",
+  troca_falhou: "Não deu para limpar o navegador do servidor. Tente trocar de novo.",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -35,6 +45,8 @@ let csrf = "";
 let current = null;
 let lastShot = 0;
 let busy = false;
+let eventsSig = "";
+let accountsSig = "";
 
 const timeFmt = new Intl.DateTimeFormat("pt-BR", {
   timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
@@ -99,10 +111,51 @@ function renderPanel(s) {
   $("vnc").href = s.vnc_url;
   $("reload").disabled = !s.desired_on;
   $("retry-login").hidden = !(s.login_latched || (s.phase === "precisa_login" && s.has_credentials));
-  const slot = s.slot;
-  $("account-user").textContent = slot.username
-    ? `Caçador: ${slot.username} (${SOURCES[slot.credentials] || slot.credentials})`
-    : "Nenhum caçador cadastrado: use o formulário abaixo.";
+  renderAccounts(s.slot);
+}
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function accountButton(label, action, account, extra = "") {
+  const btn = el("button", `button small ${extra}`.trim(), label);
+  btn.type = "button";
+  btn.dataset.action = action;
+  btn.dataset.id = account.id;
+  btn.dataset.name = account.username;
+  return btn;
+}
+
+function renderAccounts(slot) {
+  // Redesenha só quando muda: o status chega a cada 5 s e não pode roubar foco nem clique.
+  const sig = JSON.stringify([slot.accounts, slot.max_accounts]);
+  if (sig === accountsSig) return;
+  accountsSig = sig;
+  const items = slot.accounts.map((a) => {
+    const li = el("li", a.active ? "active" : "");
+    li.append(el("span", "name", a.username), el("span", "origin", SOURCES[a.source] || a.source));
+    const actions = el("span", "row-actions");
+    if (a.active) {
+      actions.append(el("span", "badge ok", "ativa"));
+    } else {
+      actions.append(accountButton("Usar esta", "activate", a));
+      if (a.source === "painel") actions.append(accountButton("Remover", "remove", a, "danger"));
+    }
+    li.append(actions);
+    return li;
+  });
+  if (!slot.accounts.some((a) => a.active)) {
+    items.unshift(el("li", "empty", "Nenhuma conta ativa: escolha uma ou adicione abaixo."));
+  }
+  $("accounts").replaceChildren(...items);
+  const full = slot.accounts.filter((a) => a.source === "painel").length >= slot.max_accounts;
+  $("add-account").querySelector("summary").textContent = full
+    ? `Trocar senha (limite de ${slot.max_accounts} contas)`
+    : "Adicionar conta ou trocar senha";
 }
 
 function render(s) {
@@ -128,9 +181,15 @@ async function refreshStatus() {
 async function refreshEvents() {
   if (!current || !current.slot) return;
   try {
-    const res = await api("/api/events?limit=50");
+    const res = await api(`/api/events?limit=${EVENTS_LIMIT}`);
     if (!res.ok) return;
     const { events } = await res.json();
+    // Só redesenha quando muda: não mexe na rolagem de quem está lendo o log.
+    const sig = events.map((e) => `${e.at}|${e.kind}|${e.message}`).join("\n");
+    if (sig === eventsSig) return;
+    eventsSig = sig;
+    const last = events[0];
+    $("events-last").textContent = last ? `${fmtTime(last.at)} · ${last.message}` : "";
     const list = $("events");
     list.replaceChildren(
       ...events.map((e) => {
@@ -186,15 +245,15 @@ async function send(path, method, body) {
   }
 }
 
-async function errorFrom(res) {
+async function errorFrom(res, fallback = "Não foi possível salvar. Tente de novo.") {
   try {
     const data = await res.json();
-    if (typeof data.detail === "string" && SAVE_ERRORS[data.detail]) return SAVE_ERRORS[data.detail];
+    if (typeof data.detail === "string" && ERRORS[data.detail]) return ERRORS[data.detail];
   } catch (err) {
     // corpo sem JSON
   }
   if (res.status === 422) return "Confira o nome de caçador e a senha.";
-  return "Não foi possível salvar. Tente de novo.";
+  return fallback;
 }
 
 function bindCredentialsForm(formId, errorId) {
@@ -203,7 +262,7 @@ function bindCredentialsForm(formId, errorId) {
     event.preventDefault();
     showError(errorId, "");
     const data = new FormData(form);
-    const res = await send("/api/slot/credentials", "PUT", {
+    const res = await send("/api/accounts", "POST", {
       username: String(data.get("username") || ""),
       password: String(data.get("password") || ""),
     });
@@ -217,6 +276,52 @@ function bindCredentialsForm(formId, errorId) {
     if (details) details.open = false;
     render(await res.json());
     await tick(true);
+  });
+}
+
+async function onAccountAction(event) {
+  const btn = event.target.closest("button[data-action]");
+  if (!btn || !current || !current.slot) return;
+  showError("account-error", "");
+  const { action, id, name } = btn.dataset;
+  const path = `/api/accounts/${encodeURIComponent(id)}`;
+  let res;
+  if (action === "activate") {
+    if (
+      current.desired_on &&
+      !window.confirm(`Trocar para ${name}? O navegador do servidor fecha e entra com ${name}.`)
+    ) {
+      return;
+    }
+    res = await send(`${path}/activate`, "POST");
+  } else if (action === "remove") {
+    if (!window.confirm(`Remover a conta ${name} do painel? A senha cadastrada é apagada.`)) return;
+    res = await send(path, "DELETE");
+  } else {
+    return;
+  }
+  if (!res) return;
+  if (!res.ok) {
+    showError("account-error", await errorFrom(res, "Não foi possível. Tente de novo."));
+    return;
+  }
+  render(await res.json());
+  await tick(true);
+}
+
+function bindEventsBox() {
+  const box = $("events-box");
+  try {
+    box.open = window.localStorage.getItem(EVENTS_OPEN_KEY) === "1";
+  } catch (err) {
+    // armazenamento bloqueado: começa fechado
+  }
+  box.addEventListener("toggle", () => {
+    try {
+      window.localStorage.setItem(EVENTS_OPEN_KEY, box.open ? "1" : "0");
+    } catch (err) {
+      // idem
+    }
   });
 }
 
@@ -257,6 +362,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   bindCredentialsForm("setup-form", "setup-error");
   bindCredentialsForm("creds-form", "account-error");
+  $("accounts").addEventListener("click", onAccountAction);
+  bindEventsBox();
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) tick(true);
   });

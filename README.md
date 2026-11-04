@@ -8,6 +8,13 @@ para os e-mails Google de `ADMIN_EMAILS` (dono) e `PLAYER_EMAILS` (jogadores lib
   do jogo e ganha a própria instância (Chromium, tela e tela remota próprios). Cada conta Google só
   vê e controla a própria. O teto de 2 é do jogo: acima de 2 contas pelo mesmo IP, ele derruba
   todas.
+- **Várias contas do jogo por instância.** O jogador cadastra até 20 contas (caçador + senha) e
+  escolhe qual a instância usa. Trocar de conta fecha o Chromium e apaga o perfil da instância
+  (o token da conta anterior mora nele), então a próxima abertura entra com a conta nova. A chave
+  liga/desliga não muda na troca. Salvar um caçador que já está na lista só troca a senha dele.
+- **Uma conta ativa em uma instância só.** Se a conta já é a ativa da outra vaga (nome comparado
+  sem diferenciar maiúsculas), ativar é recusado, e criar a instância com ela também: duas vagas na
+  mesma conta gastariam as duas vagas de IP e uma derrubaria a outra.
 - **Ligado:** o servidor abre o jogo num Chromium de verdade e fica conectado.
 - **Desligado:** o navegador do servidor fecha.
 - **Desliga sozinho** quando a conta entra em outro aparelho (`session.replaced`). Basta abrir o
@@ -49,9 +56,13 @@ Um container, até 2 slots (`app/slots.py`):
   Playwright → Chromium com janela num Xvfb próprio (slot 1 em `:99`, slot 2 em `:100`) e x11vnc
   só em `127.0.0.1` (5900, 5901). A ponte `app/vnc.py` liga o WebSocket `/vnc/ws` ao x11vnc do
   slot da sessão, depois de conferir sessão e Origin.
-- Credenciais: o jogador cadastra pelo painel; a senha fica no volume cifrada com Fernet, e a
-  chave (`DATA_KEY`) fica só no arquivo de segredos da hel1. O dono sem cadastro usa o
-  `GAME_USERNAME`/`GAME_PASSWORD` do arquivo de segredos, como antes dos slots.
+- Contas do jogo: o jogador cadastra pelo painel. A senha fica no volume cifrada com Fernet, e a
+  chave (`DATA_KEY`) fica só no arquivo de segredos da hel1. Para o dono, o
+  `GAME_USERNAME`/`GAME_PASSWORD` do arquivo de segredos aparece como mais uma conta na lista
+  (id fixo `servidor`, não sai pelo painel). Sem escolha gravada, o dono usa essa conta.
+- O supervisor relê a conta ativa a cada ciclo. Na troca, o `SlotManager` segura o laço do
+  supervisor (`Supervisor.hold`) enquanto fecha o navegador, apaga o perfil e grava a conta nova.
+  Se o perfil não sai do disco, a troca falha (503) e a conta anterior continua.
 
 Sinais, todos passivos:
 
@@ -67,7 +78,8 @@ Estado em `/data` (arquivos com permissão 600):
 - `slots.json`: quem ocupa cada vaga.
 - `sessions.json`: hash das sessões do painel.
 - `slots/<n>/`: `state.json` (chave, motivo e últimos 200 eventos), `profile/` (perfil do Chromium)
-  e `credentials.json` (caçador + senha cifrada).
+  e `accounts.json` (contas do jogo com senha cifrada, mais qual está ativa). O `credentials.json`
+  de antes (um caçador por vaga) vira a conta ativa no `accounts.json` no primeiro boot.
 - O layout de antes dos slots (`/data/state.json` + `/data/profile`) vira o slot 1 do primeiro
   e-mail de `ADMIN_EMAILS` no primeiro boot, com eventos e token do jogo preservados.
 
@@ -127,7 +139,8 @@ wsl -e docker build -t leveling-keeper:local .
 
 | Tarefa | Como |
 |---|---|
-| Trocar caçador/senha de um jogador | o próprio jogador, em "Conta do jogo" no painel |
+| Cadastrar, trocar ou remover contas do jogo | o próprio jogador, em "Contas do jogo" no painel (a ativa não sai; trocar antes) |
+| Conta recusada com "já está ativa na outra instância" | quem está com ela ativa troca de conta na própria instância |
 | Trocar a senha do dono (arquivo) ou o segredo Google | rodar `install-secrets.sh` de novo; o app relê sozinho |
 | Garantir a `DATA_KEY` sem perguntar nada | `install-secrets.sh --ensure-data-key` (nunca troca uma existente) |
 | Liberar a vaga de alguém | o próprio jogador em "Apagar minha instância"; tirar o e-mail de `PLAYER_EMAILS` só para de rodar a instância |

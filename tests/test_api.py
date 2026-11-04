@@ -25,12 +25,13 @@ from app.config import Settings
 from app.main import create_app
 from app.oidc import OidcClient
 from app.slots import (
-    CredentialStore,
+    AccountStore,
     SlotManager,
     SlotRecord,
     SlotRegistry,
     SlotRuntime,
     credentials_provider,
+    decrypt_password,
 )
 from app.state import StateStore
 from app.supervisor import Supervisor
@@ -131,7 +132,7 @@ class World:
 @pytest.fixture
 def world(settings: Settings, google: FakeGoogle) -> World:
     registry = SlotRegistry(settings.data_dir, settings.max_slots)
-    creds = CredentialStore(registry)
+    accounts = AccountStore(registry)
     drivers: dict[int, FakeDriver] = {}
 
     async def build(record: SlotRecord) -> SlotRuntime:
@@ -139,10 +140,10 @@ def world(settings: Settings, google: FakeGoogle) -> World:
         drivers[record.id] = driver
         store = StateStore(registry.slot_dir(record.id) / "state.json")
         await store.load()
-        sup = Supervisor(store, driver, credentials_provider(settings, creds, record))
+        sup = Supervisor(store, driver, credentials_provider(settings, accounts, record))
         return SlotRuntime(record, store, sup, driver, settings.vnc_port_for(record.id))
 
-    slots = SlotManager(settings, registry, creds, build)
+    slots = SlotManager(settings, registry, accounts, build)
     asyncio.run(slots.start())
     auth = AuthService(
         settings, OidcClient(settings, transport=httpx.MockTransport(google.handler))
@@ -193,14 +194,31 @@ def write(csrf: str) -> dict[str, str]:
 def create_instance(
     client: TestClient, csrf: str, username: str = "hunter", password: str = "s3nh@ 'x'"
 ) -> dict[str, Any]:
-    res = client.put(
-        "/api/slot/credentials",
-        json={"username": username, "password": password},
-        headers=write(csrf),
+    return add_account(client, csrf, username, password)
+
+
+def add_account(
+    client: TestClient, csrf: str, username: str, password: str = "pw"
+) -> dict[str, Any]:
+    res = client.post(
+        "/api/accounts", json={"username": username, "password": password}, headers=write(csrf)
     )
     assert res.status_code == 200, res.text
     body: dict[str, Any] = res.json()
     return body
+
+
+def accounts_of(body: dict[str, Any]) -> list[tuple[str, str, bool]]:
+    return [(a["username"], a["source"], a["active"]) for a in body["slot"]["accounts"]]
+
+
+def account_id(body: dict[str, Any], username: str) -> str:
+    found: str = next(a["id"] for a in body["slot"]["accounts"] if a["username"] == username)
+    return found
+
+
+def active_name(body: dict[str, Any]) -> str | None:
+    return next((a["username"] for a in body["slot"]["accounts"] if a["active"]), None)
 
 
 # --- abertas e login ----------------------------------------------------------------------------
@@ -288,11 +306,11 @@ def test_callback_needs_flow_cookie_from_same_browser(
 def test_writes_need_origin_and_csrf(client: TestClient, google: FakeGoogle) -> None:
     csrf = login(client, google, PLAYER)
     body = {"username": "hunter", "password": "pw"}
-    url = "/api/slot/credentials"
-    assert client.put(url, json=body, headers={"X-CSRF-Token": csrf}).status_code == 403
+    url = "/api/accounts"
+    assert client.post(url, json=body, headers={"X-CSRF-Token": csrf}).status_code == 403
     evil = {"Origin": "https://evil.test", "X-CSRF-Token": csrf}
-    assert client.put(url, json=body, headers=evil).status_code == 403
-    assert client.put(url, json=body, headers=write("x")).status_code == 403
+    assert client.post(url, json=body, headers=evil).status_code == 403
+    assert client.post(url, json=body, headers=write("x")).status_code == 403
     assert client.get("/api/status").json()["slot"] is None
 
 
@@ -301,7 +319,9 @@ def test_player_creates_instance_and_turns_it_on(
 ) -> None:
     csrf = login(client, google, PLAYER)
     body = create_instance(client, csrf)
-    assert body["slot"] == {"id": 1, "username": "hunter", "credentials": "painel"}
+    assert body["slot"]["id"] == 1
+    assert accounts_of(body) == [("hunter", "painel", True)]
+    assert set(body["slot"]["accounts"][0]) == {"id", "username", "source", "active"}
     assert body["capacity"] == {"used": 1, "max": 2}
     assert body["desired_on"] is False
 
@@ -309,7 +329,7 @@ def test_player_creates_instance_and_turns_it_on(
     assert on.status_code == 200
     assert on.json()["desired_on"] is True
     kinds = [e["kind"] for e in client.get("/api/events").json()["events"]]
-    assert kinds[:3] == ["ligado", "login", "criada"]
+    assert kinds[:3] == ["ligado", "conta", "criada"]
 
     # O supervisor do slot entra com a senha cadastrada.
     runtime = world.slots.for_email(PLAYER)
@@ -326,7 +346,7 @@ def test_password_is_encrypted_and_never_returned(
     csrf = login(client, google, PLAYER)
     body = create_instance(client, csrf, password="segredo-do-jogo")
     assert "segredo-do-jogo" not in json.dumps(body)
-    stored = (world.registry.slot_dir(1) / "credentials.json").read_text(encoding="utf-8")
+    stored = (world.registry.slot_dir(1) / "accounts.json").read_text(encoding="utf-8")
     assert "segredo-do-jogo" not in stored
     assert "hunter" in stored
 
@@ -345,16 +365,17 @@ def test_players_are_isolated(
 
     owner = client.get("/api/status").json()
     player = other.get("/api/status").json()
-    assert (owner["slot"]["id"], owner["slot"]["username"], owner["desired_on"]) == (
+    assert (owner["slot"]["id"], active_name(owner), owner["desired_on"]) == (
         1,
         "owner-hunter",
         False,
     )
-    assert (player["slot"]["id"], player["slot"]["username"], player["desired_on"]) == (
+    assert (player["slot"]["id"], active_name(player), player["desired_on"]) == (
         2,
         "pug",
         True,
     )
+    assert [a[0] for a in accounts_of(player)] == ["pug"]  # só o dono vê a conta do arquivo
     owner_events = [e["message"] for e in client.get("/api/events").json()["events"]]
     assert not any("pug" in m for m in owner_events)
     assert not any(e["kind"] == "ligado" for e in client.get("/api/events").json()["events"])
@@ -363,13 +384,13 @@ def test_players_are_isolated(
 def test_third_player_gets_no_slot(
     client: TestClient, other: TestClient, google: FakeGoogle, world: World
 ) -> None:
-    create_instance(client, login(client, google, ADMIN))
-    create_instance(other, login(other, google, PLAYER))
+    create_instance(client, login(client, google, ADMIN), username="owner-alt")
+    create_instance(other, login(other, google, PLAYER), username="pug")
     with TestClient(world.app, base_url=ORIGIN, follow_redirects=False) as third:
         csrf = login(third, google, THIRD)
         assert third.get("/api/status").json()["capacity"] == {"used": 2, "max": 2}
-        res = third.put(
-            "/api/slot/credentials",
+        res = third.post(
+            "/api/accounts",
             json={"username": "third", "password": "pw"},
             headers=write(csrf),
         )
@@ -382,8 +403,8 @@ def test_missing_data_key_creates_nothing(
 ) -> None:
     write_secrets(settings.secrets_file, data_key="")
     csrf = login(client, google, PLAYER)
-    res = client.put(
-        "/api/slot/credentials", json={"username": "hunter", "password": "pw"}, headers=write(csrf)
+    res = client.post(
+        "/api/accounts", json={"username": "hunter", "password": "pw"}, headers=write(csrf)
     )
     assert res.status_code == 503
     assert res.json()["detail"] == "sem_chave"
@@ -438,8 +459,190 @@ def test_credentials_are_validated(
     client: TestClient, google: FakeGoogle, body: dict[str, str]
 ) -> None:
     csrf = login(client, google, PLAYER)
-    res = client.put("/api/slot/credentials", json=body, headers=write(csrf))
+    res = client.post("/api/accounts", json=body, headers=write(csrf))
     assert res.status_code == 422
+
+
+# --- contas do jogo -----------------------------------------------------------------------------
+
+
+def test_player_registers_accounts_and_switches(
+    client: TestClient, google: FakeGoogle, world: World
+) -> None:
+    csrf = login(client, google, PLAYER)
+    create_instance(client, csrf, username="pug", password="pw-pug")
+    body = add_account(client, csrf, "alt", "pw-alt")
+    assert accounts_of(body) == [("pug", "painel", True), ("alt", "painel", False)]
+    assert "pw-alt" not in json.dumps(body)
+    alt = account_id(body, "alt")
+
+    assert client.post("/api/power", json={"on": True}, headers=write(csrf)).status_code == 200
+    driver = world.drivers[1]
+    driver.calls.clear()
+
+    res = client.post(f"/api/accounts/{alt}/activate", headers=write(csrf))
+    assert res.status_code == 200, res.text
+    switched = res.json()
+    assert accounts_of(switched) == [("pug", "painel", False), ("alt", "painel", True)]
+    assert switched["desired_on"] is True  # a chave fica como estava
+    assert driver.calls == ["forget"]  # navegador fechado e perfil (token) apagado
+    messages = [e["message"] for e in client.get("/api/events").json()["events"]]
+    assert messages[0] == "Conta ativa agora: alt"
+
+    runtime = world.slots.for_email(PLAYER)
+    assert runtime is not None
+    asyncio.run(runtime.supervisor.tick())
+    assert runtime.supervisor.status().game_username == "alt"
+    assert driver.calls[-1] == "launch"  # ligada: reabre já na conta nova
+
+    # Ativar a que já está ativa não fecha nada.
+    driver.calls.clear()
+    assert client.post(f"/api/accounts/{alt}/activate", headers=write(csrf)).status_code == 200
+    assert driver.calls == []
+
+
+def test_saving_a_listed_hunter_changes_its_password(
+    client: TestClient, google: FakeGoogle, world: World
+) -> None:
+    csrf = login(client, google, PLAYER)
+    create_instance(client, csrf, username="pug", password="velha")
+    body = add_account(client, csrf, "PUG", "nova")
+    assert accounts_of(body) == [("PUG", "painel", True)]
+    book = AccountStore(world.registry).load(1)
+    assert decrypt_password(book.accounts[0], DATA_KEY) == "nova"
+    messages = [e["message"] for e in client.get("/api/events").json()["events"]]
+    assert messages[0] == "Conta PUG com senha nova"
+
+
+def test_owner_sees_the_file_account_and_players_cannot_take_it(
+    client: TestClient, other: TestClient, google: FakeGoogle, world: World
+) -> None:
+    owner_csrf = login(client, google, ADMIN)
+    body = create_instance(client, owner_csrf, username="owner-alt")
+    # Criar a instância ativa a conta digitada; a do arquivo fica na lista, primeiro.
+    assert accounts_of(body) == [
+        ("owner-hunter", "servidor", False),
+        ("owner-alt", "painel", True),
+    ]
+    res = client.post("/api/accounts/servidor/activate", headers=write(owner_csrf))
+    assert res.status_code == 200
+    assert accounts_of(res.json()) == [
+        ("owner-hunter", "servidor", True),
+        ("owner-alt", "painel", False),
+    ]
+
+    player_csrf = login(other, google, PLAYER)
+    refused = other.post(
+        "/api/accounts",
+        json={"username": "Owner-Hunter", "password": "x"},
+        headers=write(player_csrf),
+    )
+    assert (refused.status_code, refused.json()["detail"]) == (409, "conta_em_uso")
+    create_instance(other, player_csrf, username="pug")
+    server = other.post("/api/accounts/servidor/activate", headers=write(player_csrf))
+    assert server.status_code == 404  # a conta do arquivo não existe para o jogador
+
+
+def test_same_account_is_active_in_one_slot_only(
+    client: TestClient, other: TestClient, google: FakeGoogle, world: World
+) -> None:
+    owner_csrf = login(client, google, ADMIN)
+    player_csrf = login(other, google, PLAYER)
+    create_instance(client, owner_csrf, username="Shared")
+
+    # Criar a instância com a conta ativa da outra vaga: recusa sem ocupar vaga.
+    res = other.post(
+        "/api/accounts", json={"username": "shared", "password": "pw"}, headers=write(player_csrf)
+    )
+    assert (res.status_code, res.json()["detail"]) == (409, "conta_em_uso")
+    assert other.get("/api/status").json()["slot"] is None
+    assert world.registry.by_email(PLAYER) is None
+
+    # Cadastrar pode; ativar não.
+    create_instance(other, player_csrf, username="pug")
+    body = add_account(other, player_csrf, "SHARED")
+    assert accounts_of(body) == [("pug", "painel", True), ("SHARED", "painel", False)]
+    shared = account_id(body, "SHARED")
+    refused = other.post(f"/api/accounts/{shared}/activate", headers=write(player_csrf))
+    assert (refused.status_code, refused.json()["detail"]) == (409, "conta_em_uso")
+    assert world.drivers[2].calls == []  # nada fechado
+
+    # O dono troca de conta; aí a compartilhada fica livre.
+    client.post("/api/accounts/servidor/activate", headers=write(owner_csrf))
+    ok = other.post(f"/api/accounts/{shared}/activate", headers=write(player_csrf))
+    assert ok.status_code == 200
+    assert active_name(ok.json()) == "SHARED"
+    back = client.post(
+        f"/api/accounts/{account_id(client.get('/api/status').json(), 'Shared')}/activate",
+        headers=write(owner_csrf),
+    )
+    assert (back.status_code, back.json()["detail"]) == (409, "conta_em_uso")
+
+
+def test_account_removal_rules(client: TestClient, google: FakeGoogle) -> None:
+    csrf = login(client, google, ADMIN)
+    create_instance(client, csrf, username="owner-alt")
+    body = add_account(client, csrf, "outra")
+    alt, outra = account_id(body, "owner-alt"), account_id(body, "outra")
+    for target, code, detail in [
+        (alt, 409, "conta_ativa"),
+        ("servidor", 409, "conta_do_servidor"),
+        ("0123456789ab", 404, "conta_nao_encontrada"),
+    ]:
+        res = client.delete(f"/api/accounts/{target}", headers=write(csrf))
+        assert (res.status_code, res.json()["detail"]) == (code, detail)
+    assert client.delete("/api/accounts/NAO-E-ID", headers=write(csrf)).status_code == 422
+    res = client.delete(f"/api/accounts/{outra}", headers=write(csrf))
+    assert res.status_code == 200
+    assert [a[0] for a in accounts_of(res.json())] == ["owner-hunter", "owner-alt"]
+    messages = [e["message"] for e in client.get("/api/events").json()["events"]]
+    assert messages[0] == "Conta outra removida"
+
+
+def test_account_ids_are_scoped_to_the_session(
+    client: TestClient, other: TestClient, google: FakeGoogle
+) -> None:
+    owner_csrf = login(client, google, ADMIN)
+    create_instance(client, owner_csrf, username="owner-alt")
+    extra = account_id(add_account(client, owner_csrf, "owner-extra"), "owner-extra")
+    player_csrf = login(other, google, PLAYER)
+    create_instance(other, player_csrf, username="pug")
+
+    assert (
+        other.post(f"/api/accounts/{extra}/activate", headers=write(player_csrf)).status_code == 404
+    )
+    assert other.delete(f"/api/accounts/{extra}", headers=write(player_csrf)).status_code == 404
+    owner = client.get("/api/status").json()
+    assert [a[0] for a in accounts_of(owner)] == ["owner-hunter", "owner-alt", "owner-extra"]
+
+
+def test_failed_switch_keeps_the_account(
+    client: TestClient, google: FakeGoogle, world: World
+) -> None:
+    csrf = login(client, google, PLAYER)
+    create_instance(client, csrf, username="pug")
+    alt = account_id(add_account(client, csrf, "alt"), "alt")
+
+    async def broken() -> None:
+        raise OSError("profile busy")
+
+    world.drivers[1].forget_session = broken  # type: ignore[method-assign]
+    res = client.post(f"/api/accounts/{alt}/activate", headers=write(csrf))
+    assert (res.status_code, res.json()["detail"]) == (503, "troca_falhou")
+    assert active_name(client.get("/api/status").json()) == "pug"
+    events = client.get("/api/events").json()["events"]
+    assert (events[0]["kind"], events[0]["message"]) == (
+        "erro",
+        "Troca para alt falhou: a conta anterior continua",
+    )
+
+
+def test_account_routes_without_instance(client: TestClient, google: FakeGoogle) -> None:
+    csrf = login(client, google, PLAYER)
+    res = client.post("/api/accounts/0123456789ab/activate", headers=write(csrf))
+    assert (res.status_code, res.json()["detail"]) == (409, "sem_instancia")
+    res = client.delete("/api/accounts/0123456789ab", headers=write(csrf))
+    assert (res.status_code, res.json()["detail"]) == (409, "sem_instancia")
 
 
 # --- demais rotas -------------------------------------------------------------------------------

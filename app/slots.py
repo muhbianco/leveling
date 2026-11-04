@@ -1,11 +1,13 @@
 """Slots: uma instância do jogo por jogador liberado, no máximo `max_slots` ao mesmo tempo.
 
-Cada slot tem pasta própria em /data/slots/<id>/ (perfil do Chromium, state.json e credenciais
-cifradas), tela própria (Xvfb + x11vnc) e supervisor próprio. O slot de uma requisição sai da
-sessão Google (e-mail -> slot), nunca de um id vindo do navegador: um jogador não alcança a
+Cada slot tem pasta própria em /data/slots/<id>/ (perfil do Chromium, state.json e as contas do
+jogo cifradas), tela própria (Xvfb + x11vnc) e supervisor próprio. O slot de uma requisição sai
+da sessão Google (e-mail -> slot), nunca de um id vindo do navegador: um jogador não alcança a
 instância do outro.
 
-O teto de 2 é do próprio jogo: acima de 2 contas pelo mesmo IP, ele derruba todas.
+O teto de 2 é do próprio jogo: acima de 2 contas pelo mesmo IP, ele derruba todas. Pelo mesmo
+motivo uma conta do jogo só fica ativa em uma vaga: duas vagas na mesma conta gastariam as duas
+vagas de IP e uma derrubaria a outra ("acessada em outro dispositivo").
 """
 
 from __future__ import annotations
@@ -15,10 +17,10 @@ import json
 import logging
 import os
 import shutil
+import time
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -30,17 +32,62 @@ from app.supervisor import Supervisor
 
 logger = logging.getLogger(__name__)
 
-SOURCE_PANEL = "painel"  # usuário e senha cadastrados pelo próprio jogador no painel
-SOURCE_SERVER = "servidor"  # dono sem cadastro: usuário e senha do arquivo de segredos
+SOURCE_PANEL = "painel"  # conta cadastrada pelo próprio jogador no painel
+SOURCE_SERVER = "servidor"  # conta do dono no arquivo de segredos
 SOURCE_NONE = "nenhuma"
 
+# A conta do arquivo de segredos não mora no accounts.json; no painel ela tem este id fixo.
+SERVER_ACCOUNT_ID = "servidor"
+ACCOUNT_ID_PATTERN = r"^(?:[0-9a-f]{12}|servidor)$"
+MAX_ACCOUNTS = 20  # por jogador
 
-class SlotFullError(Exception):
+
+class SlotError(Exception):
+    """Recusa com código estável; a API traduz o código para status HTTP."""
+
+    code = "erro"
+
+
+class SlotFullError(SlotError):
     """Todas as vagas ocupadas."""
 
+    code = "sem_vaga"
 
-class DataKeyError(Exception):
+
+class DataKeyError(SlotError):
     """Sem DATA_KEY válida no arquivo de segredos: não dá para guardar senha cifrada."""
+
+    code = "sem_chave"
+
+
+class NoInstanceError(SlotError):
+    code = "sem_instancia"
+
+
+class AccountLimitError(SlotError):
+    code = "contas_demais"
+
+
+class AccountNotFoundError(SlotError):
+    code = "conta_nao_encontrada"
+
+
+class AccountInUseError(SlotError):
+    """A conta já está ativa na outra vaga."""
+
+    code = "conta_em_uso"
+
+
+class AccountActiveError(SlotError):
+    """A conta em uso não sai da lista: troca antes."""
+
+    code = "conta_ativa"
+
+
+class ServerAccountError(SlotError):
+    """A conta do arquivo de segredos só muda no arquivo."""
+
+    code = "conta_do_servidor"
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,58 +167,183 @@ class SlotRegistry:
         write_json_atomic(self._path, payload)
 
 
-# --- credenciais ------------------------------------------------------------------------------
+# --- contas do jogo ---------------------------------------------------------------------------
+
+
+def account_key(username: str) -> str:
+    """Mesma conta, grafias diferentes ("Mear" e "mear"): compara sem caixa."""
+    return username.casefold()
 
 
 @dataclass(frozen=True, slots=True)
-class StoredLogin:
+class GameAccount:
+    id: str
     username: str
-    password: str = field(repr=False)
-    version: float
+    created_at: str
+    # Muda a cada senha nova: o supervisor destrava o login quando ela muda.
+    rev: float
+    token: str = field(repr=False)  # senha cifrada (Fernet)
 
 
-class CredentialStore:
-    """credentials.json por slot: usuário em claro, senha cifrada com Fernet (DATA_KEY).
-    A chave mora no arquivo de segredos da hel1, não no volume. Métodos síncronos."""
+@dataclass(frozen=True, slots=True)
+class AccountBook:
+    """As contas de um slot e a escolhida. `active` None = nenhuma escolha gravada."""
+
+    active: str | None = None
+    accounts: tuple[GameAccount, ...] = ()
+
+    def get(self, account_id: str) -> GameAccount | None:
+        return next((a for a in self.accounts if a.id == account_id), None)
+
+    def find(self, username: str) -> GameAccount | None:
+        key = account_key(username)
+        return next((a for a in self.accounts if account_key(a.username) == key), None)
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveAccount:
+    id: str
+    username: str
+    source: str  # SOURCE_PANEL ou SOURCE_SERVER
+
+
+@dataclass(frozen=True, slots=True)
+class AccountView:
+    """O que o painel vê de cada conta. Nunca a senha."""
+
+    id: str
+    username: str
+    source: str
+    active: bool
+
+
+def resolve_active(book: AccountBook, server_user: str | None) -> ActiveAccount | None:
+    """Conta que o slot usa agora. Sem escolha gravada, o dono fica na do arquivo de segredos
+    (o jeito de antes das contas)."""
+    if book.active is None or book.active == SERVER_ACCOUNT_ID:
+        if server_user:
+            return ActiveAccount(SERVER_ACCOUNT_ID, server_user, SOURCE_SERVER)
+        return None
+    account = book.get(book.active)
+    return None if account is None else ActiveAccount(account.id, account.username, SOURCE_PANEL)
+
+
+def server_username(settings: Settings, record: SlotRecord, secrets: Secrets) -> str | None:
+    """A conta do arquivo de segredos vale só para o dono."""
+    if record.email in settings.admin_email_set and secrets.has_game_credentials:
+        return secrets.game_username
+    return None
+
+
+class AccountStore:
+    """accounts.json por slot: as contas do jogo do jogador e qual está ativa. Usuário em claro,
+    senha cifrada com Fernet (DATA_KEY); a chave mora no arquivo de segredos da hel1, não no
+    volume. Métodos síncronos (rodar com asyncio.to_thread). Quem grava é o SlotManager, sob o
+    lock dele; o supervisor só lê, e a gravação atômica não deixa ele ver arquivo pela metade."""
 
     def __init__(self, registry: SlotRegistry) -> None:
         self._registry = registry
 
     def _path(self, slot_id: int) -> Path:
+        return self._registry.slot_dir(slot_id) / "accounts.json"
+
+    def _legacy_path(self, slot_id: int) -> Path:
         return self._registry.slot_dir(slot_id) / "credentials.json"
 
-    def save(self, slot_id: int, username: str, password: str, data_key: str) -> None:
+    def load(self, slot_id: int) -> AccountBook:
+        try:
+            raw = json.loads(self._path(slot_id).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return AccountBook()
+        except (OSError, ValueError) as exc:
+            logger.warning("slot %s accounts file unreadable: %s", slot_id, type(exc).__name__)
+            return AccountBook()
+        try:
+            accounts = tuple(
+                GameAccount(
+                    id=str(item["id"]),
+                    username=str(item["username"]),
+                    created_at=str(item["created_at"]),
+                    rev=float(item["rev"]),
+                    token=str(item["password"]),
+                )
+                for item in raw["accounts"]
+            )
+            active = raw.get("active")
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("slot %s accounts file malformed: %s", slot_id, type(exc).__name__)
+            return AccountBook()
+        return AccountBook(str(active) if active else None, accounts)
+
+    def upsert(
+        self, slot_id: int, username: str, password: str, data_key: str
+    ) -> tuple[GameAccount, bool]:
+        """Conta nova, ou senha nova para um caçador que já está na lista. (conta, criou?)"""
         token = _fernet(data_key).encrypt(password.encode()).decode()
-        payload = {"username": username, "password": token, "updated_at": utcnow_iso()}
+        book = self.load(slot_id)
+        existing = book.find(username)
+        if existing is not None:
+            updated = replace(existing, username=username, rev=time.time(), token=token)
+            accounts = tuple(updated if a.id == existing.id else a for a in book.accounts)
+            self._save(slot_id, replace(book, accounts=accounts))
+            return updated, False
+        if len(book.accounts) >= MAX_ACCOUNTS:
+            raise AccountLimitError
+        account = GameAccount(os.urandom(6).hex(), username, utcnow_iso(), time.time(), token)
+        self._save(slot_id, replace(book, accounts=(*book.accounts, account)))
+        return account, True
+
+    def remove(self, slot_id: int, account_id: str) -> None:
+        book = self.load(slot_id)
+        accounts = tuple(a for a in book.accounts if a.id != account_id)
+        self._save(slot_id, replace(book, accounts=accounts))
+
+    def set_active(self, slot_id: int, account_id: str) -> None:
+        self._save(slot_id, replace(self.load(slot_id), active=account_id))
+
+    def _save(self, slot_id: int, book: AccountBook) -> None:
+        payload = {
+            "active": book.active,
+            "accounts": [
+                {
+                    "id": a.id,
+                    "username": a.username,
+                    "password": a.token,
+                    "created_at": a.created_at,
+                    "rev": a.rev,
+                }
+                for a in book.accounts
+            ],
+        }
         write_json_atomic(self._path(slot_id), payload)
 
-    def username(self, slot_id: int) -> str | None:
-        raw = self._raw(slot_id)
-        return str(raw["username"]) if raw and raw.get("username") else None
-
-    def read(self, slot_id: int, data_key: str) -> StoredLogin | None:
-        path = self._path(slot_id)
-        raw = self._raw(slot_id)
-        if raw is None:
-            return None
+    def migrate_legacy(self, slot_id: int) -> None:
+        """credentials.json (um caçador por slot, antes das contas) vira a conta ativa."""
+        legacy = self._legacy_path(slot_id)
+        if self._path(slot_id).exists() or not legacy.exists():
+            return
         try:
-            password = _fernet(data_key).decrypt(str(raw["password"]).encode()).decode()
-            version = path.stat().st_mtime
-        except (DataKeyError, InvalidToken, KeyError, OSError) as exc:
-            # Chave trocada ou arquivo mexido: trata como sem cadastro (o painel pede de novo).
-            logger.warning("slot %s credentials unreadable: %s", slot_id, type(exc).__name__)
-            return None
-        return StoredLogin(str(raw.get("username", "")), password, version)
+            raw = json.loads(legacy.read_text(encoding="utf-8"))
+            username, token = str(raw["username"]), str(raw["password"])
+            rev = legacy.stat().st_mtime
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("slot %s legacy credentials unreadable: %s", slot_id, type(exc).__name__)
+            return
+        account = GameAccount(
+            os.urandom(6).hex(), username, str(raw.get("updated_at") or utcnow_iso()), rev, token
+        )
+        self._save(slot_id, AccountBook(account.id, (account,)))
+        legacy.unlink()
+        logger.info("slot %s legacy credentials migrated to accounts.json", slot_id)
 
-    def _raw(self, slot_id: int) -> dict[str, Any] | None:
-        try:
-            data = json.loads(self._path(slot_id).read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None
-        except (OSError, ValueError) as exc:
-            logger.warning("slot %s credentials file unreadable: %s", slot_id, type(exc).__name__)
-            return None
-        return data if isinstance(data, dict) else None
+
+def decrypt_password(account: GameAccount, data_key: str) -> str | None:
+    try:
+        return _fernet(data_key).decrypt(account.token.encode()).decode()
+    except (DataKeyError, InvalidToken) as exc:
+        # Chave trocada ou arquivo mexido: o painel mostra a conta, mas o robô não entra com ela.
+        logger.warning("account %s unreadable: %s", account.id, type(exc).__name__)
+        return None
 
 
 def _fernet(data_key: str) -> Fernet:
@@ -184,29 +356,34 @@ def _fernet(data_key: str) -> Fernet:
 
 
 def credentials_provider(
-    settings: Settings, creds: CredentialStore, record: SlotRecord
+    settings: Settings, accounts: AccountStore, record: SlotRecord
 ) -> Callable[[], Awaitable[Secrets]]:
-    """O que o supervisor do slot usa para entrar no jogo: o cadastro do painel; sem ele, o dono
-    usa o usuário/senha do arquivo de segredos (o jeito de antes dos slots)."""
+    """O que o supervisor do slot usa para entrar no jogo: a conta ativa (do painel ou, para o
+    dono, a do arquivo de segredos). Lido a cada ciclo: trocar de conta não pede reinício."""
 
     def load() -> Secrets:
         secrets = read_secrets(settings.secrets_file)
-        stored = creds.read(record.id, secrets.data_key)
-        if stored is not None:
-            return Secrets(
-                game_username=stored.username,
-                game_password=stored.password,
-                version=stored.version,
-                source=SOURCE_PANEL,
-            )
-        if record.email in settings.admin_email_set and secrets.has_game_credentials:
+        book = accounts.load(record.id)
+        active = resolve_active(book, server_username(settings, record, secrets))
+        if active is None:
+            return Secrets(source=SOURCE_NONE)
+        if active.source == SOURCE_SERVER:
             return Secrets(
                 game_username=secrets.game_username,
                 game_password=secrets.game_password,
                 version=secrets.version,
                 source=SOURCE_SERVER,
             )
-        return Secrets(source=SOURCE_NONE)
+        account = book.get(active.id)
+        password = None if account is None else decrypt_password(account, secrets.data_key)
+        if account is None or password is None:
+            return Secrets(source=SOURCE_NONE)
+        return Secrets(
+            game_username=account.username,
+            game_password=password,
+            version=account.rev,
+            source=SOURCE_PANEL,
+        )
 
     async def provide() -> Secrets:
         return await asyncio.to_thread(load)
@@ -251,12 +428,12 @@ class SlotManager:
         self,
         settings: Settings,
         registry: SlotRegistry,
-        creds: CredentialStore,
+        accounts: AccountStore,
         factory: RuntimeFactory,
     ) -> None:
         self._settings = settings
         self._registry = registry
-        self._creds = creds
+        self._accounts = accounts
         self._factory = factory
         self._runtimes: dict[int, SlotRuntime] = {}
         self._lock = asyncio.Lock()
@@ -273,6 +450,7 @@ class SlotManager:
         owner = self._settings.admin_email_list[0] if self._settings.admin_email_list else None
         await asyncio.to_thread(self._registry.load, owner)
         for record in self._registry.records():
+            await asyncio.to_thread(self._accounts.migrate_legacy, record.id)
             if record.email not in self._settings.allowed_email_set:
                 # E-mail saiu da lista: a vaga fica guardada, mas a instância não roda.
                 logger.warning("slot %s belongs to a non-allowed account; not started", record.id)
@@ -286,25 +464,131 @@ class SlotManager:
     def capacity_left(self) -> int:
         return self._settings.max_slots - len(self._registry.records())
 
-    async def save_credentials(self, email: str, username: str, password: str) -> SlotRuntime:
-        """Cria a instância do jogador se ainda não existe e grava usuário + senha cifrada."""
+    # --- contas (todas as gravações sob self._lock) -----------------------------------------
+
+    async def save_account(self, email: str, username: str, password: str) -> SlotRuntime:
+        """Cadastra uma conta (ou a senha nova de uma que já está na lista). Sem instância, cria
+        a instância com essa conta ativa. Sem conta ativa, a nova vira a ativa."""
         secrets = await asyncio.to_thread(read_secrets, self._settings.secrets_file)
         _fernet(secrets.data_key)  # sem chave válida, nada é criado
         async with self._lock:
             record = self._registry.by_email(email)
+            new_slot = record is None
             if record is None:
+                # Recusa antes de ocupar a vaga: uma instância sem conta usável não serve.
+                if await self._active_elsewhere(username, None, secrets):
+                    raise AccountInUseError
                 record = await asyncio.to_thread(self._registry.add, email)
-            await asyncio.to_thread(
-                self._creds.save, record.id, username, password, secrets.data_key
+            account, created = await asyncio.to_thread(
+                self._accounts.upsert, record.id, username, password, secrets.data_key
             )
+            book = await asyncio.to_thread(self._accounts.load, record.id)
+            current = resolve_active(book, server_username(self._settings, record, secrets))
+            activate = (new_slot or current is None) and not await self._active_elsewhere(
+                account.username, record.id, secrets
+            )
+            if activate:
+                await asyncio.to_thread(self._accounts.set_active, record.id, account.id)
             runtime = self._runtimes.get(record.id)
             if runtime is None:
                 runtime = await self._factory(record)
                 self._runtimes[record.id] = runtime
                 await runtime.store.add_event("criada", "Instância criada")
-        await runtime.store.add_event("login", f"Credenciais do jogo atualizadas ({username})")
+        what = "cadastrada" if created else "com senha nova"
+        suffix = " e ativa" if activate else ""
+        await runtime.store.add_event("conta", f"Conta {account.username} {what}{suffix}")
         await runtime.supervisor.credentials_changed()
         return runtime
+
+    async def activate_account(self, email: str, account_id: str) -> SlotRuntime:
+        """Troca a conta da instância. Fecha o navegador e apaga o perfil (o token da conta
+        anterior mora nele); a chave fica como estava, então ligada reabre já na conta nova."""
+        secrets = await asyncio.to_thread(read_secrets, self._settings.secrets_file)
+        async with self._lock:
+            record, runtime = self._owned(email)
+            book = await asyncio.to_thread(self._accounts.load, record.id)
+            server = server_username(self._settings, record, secrets)
+            target = _target(book, server, account_id)
+            current = resolve_active(book, server)
+            if current is not None and current.id == target.id:
+                return runtime
+            if await self._active_elsewhere(target.username, record.id, secrets):
+                raise AccountInUseError
+            try:
+                async with runtime.supervisor.hold():
+                    await runtime.driver.forget_session()
+                    await asyncio.to_thread(self._accounts.set_active, record.id, target.id)
+                    await runtime.store.add_event("conta", f"Conta ativa agora: {target.username}")
+            except OSError as exc:
+                logger.warning("slot %s account switch failed: %s", record.id, type(exc).__name__)
+                await runtime.store.add_event(
+                    "erro", f"Troca para {target.username} falhou: a conta anterior continua"
+                )
+                raise
+        logger.info("slot %s switched account", record.id)
+        return runtime
+
+    async def remove_account(self, email: str, account_id: str) -> SlotRuntime:
+        if account_id == SERVER_ACCOUNT_ID:
+            raise ServerAccountError
+        secrets = await asyncio.to_thread(read_secrets, self._settings.secrets_file)
+        async with self._lock:
+            record, runtime = self._owned(email)
+            book = await asyncio.to_thread(self._accounts.load, record.id)
+            account = book.get(account_id)
+            if account is None:
+                raise AccountNotFoundError
+            current = resolve_active(book, server_username(self._settings, record, secrets))
+            if current is not None and current.id == account.id:
+                raise AccountActiveError
+            await asyncio.to_thread(self._accounts.remove, record.id, account.id)
+        await runtime.store.add_event("conta", f"Conta {account.username} removida")
+        return runtime
+
+    async def accounts_view(self, runtime: SlotRuntime) -> list[AccountView]:
+        """Contas para o painel: a do arquivo de segredos (só o dono) primeiro."""
+        record = runtime.record
+
+        def build() -> list[AccountView]:
+            secrets = read_secrets(self._settings.secrets_file)
+            book = self._accounts.load(record.id)
+            server = server_username(self._settings, record, secrets)
+            active = resolve_active(book, server)
+            active_id = None if active is None else active.id
+            views = [
+                AccountView(a.id, a.username, SOURCE_PANEL, a.id == active_id)
+                for a in book.accounts
+            ]
+            if server:
+                own = AccountView(
+                    SERVER_ACCOUNT_ID, server, SOURCE_SERVER, active_id == SERVER_ACCOUNT_ID
+                )
+                views.insert(0, own)
+            return views
+
+        return await asyncio.to_thread(build)
+
+    def _owned(self, email: str) -> tuple[SlotRecord, SlotRuntime]:
+        record = self._registry.by_email(email)
+        runtime = None if record is None else self._runtimes.get(record.id)
+        if record is None or runtime is None:
+            raise NoInstanceError
+        return record, runtime
+
+    async def _active_elsewhere(self, username: str, slot_id: int | None, secrets: Secrets) -> bool:
+        """A conta já é a ativa de outra vaga? Conta toda vaga registrada, rodando ou não: a que
+        está parada volta com a mesma conta quando o e-mail for liberado de novo."""
+        key = account_key(username)
+        for other in self._registry.records():
+            if other.id == slot_id:
+                continue
+            book = await asyncio.to_thread(self._accounts.load, other.id)
+            active = resolve_active(book, server_username(self._settings, other, secrets))
+            if active is not None and account_key(active.username) == key:
+                return True
+        return False
+
+    # --- vaga --------------------------------------------------------------------------------
 
     async def delete(self, email: str) -> bool:
         async with self._lock:
@@ -318,16 +602,6 @@ class SlotManager:
         logger.info("slot %s deleted", record.id)
         return True
 
-    async def credential_info(self, runtime: SlotRuntime) -> tuple[str | None, str]:
-        """(nome de caçador, origem) para o painel. Nunca a senha."""
-        username = await asyncio.to_thread(self._creds.username, runtime.record.id)
-        if username:
-            return username, SOURCE_PANEL
-        status = runtime.supervisor.status()
-        if status.has_credentials:
-            return status.game_username or None, SOURCE_SERVER
-        return None, SOURCE_NONE
-
     def healthy(self) -> bool:
         return all(r.healthy() for r in self._runtimes.values())
 
@@ -335,3 +609,14 @@ class SlotManager:
         for runtime in list(self._runtimes.values()):
             await runtime.stop()
         self._runtimes.clear()
+
+
+def _target(book: AccountBook, server_user: str | None, account_id: str) -> ActiveAccount:
+    if account_id == SERVER_ACCOUNT_ID:
+        if not server_user:
+            raise AccountNotFoundError
+        return ActiveAccount(SERVER_ACCOUNT_ID, server_user, SOURCE_SERVER)
+    account = book.get(account_id)
+    if account is None:
+        raise AccountNotFoundError
+    return ActiveAccount(account.id, account.username, SOURCE_PANEL)

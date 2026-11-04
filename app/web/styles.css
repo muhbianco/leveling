@@ -98,12 +98,49 @@ h2 { font-size: 1rem; margin: 0 0 8px; }
 .button:disabled { opacity: 0.5; cursor: default; }
 .link { background: none; border: none; color: var(--accent); font: inherit; cursor: pointer; }
 
-.events { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 0.9rem; }
+/* Eventos: fechado mostra só o último numa linha; aberto, uma caixa de log com rolagem. */
+.events-box { margin-top: 0; padding: 12px 16px; }
+.events-box > summary {
+  display: flex; align-items: baseline; gap: 10px; min-width: 0;
+  color: var(--text); list-style: none;
+}
+.events-box > summary::-webkit-details-marker { display: none; }
+.events-box > summary::before {
+  content: "\25B8"; color: var(--muted); flex: none; transition: transform 0.15s;
+}
+.events-box[open] > summary::before { transform: rotate(90deg); }
+.events-title { font-weight: 600; flex: none; }
+.events-last {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-size: 0.85rem;
+}
+.events-box[open] .events-last { display: none; }
+
+.events { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .events li { display: grid; grid-template-columns: auto 1fr; gap: 10px; }
 .events time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .events .assumido span, .events .desligado span { color: var(--muted); }
 .events .erro span { color: var(--bad); }
 .events .jogando span { color: var(--ok); }
+.log {
+  margin-top: 10px; max-height: 13rem; overflow-y: auto; overscroll-behavior: contain;
+  padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  font: 0.78rem/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+.log:empty::before { content: "Sem eventos ainda."; color: var(--muted); }
+
+/* Contas do jogo */
+.accounts { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.accounts li {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+}
+.accounts li.active { border-color: var(--accent); }
+.accounts .name { font-weight: 600; overflow-wrap: anywhere; }
+.accounts .origin { color: var(--muted); font-size: 0.8rem; flex: 1; min-width: 8rem; }
+.accounts .row-actions { display: flex; gap: 6px; margin-left: auto; }
+.accounts .empty { color: var(--muted); border-style: dashed; }
+.button.small { padding: 5px 10px; font-size: 0.85rem; border-radius: 8px; }
 
 body.login { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
 body.login .card { max-width: 380px; width: 100%; text-align: center; }

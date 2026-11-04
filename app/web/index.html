@@ -72,16 +72,19 @@
         <p class="hint">Com a tela remota aberta o robô só observa: não recarrega nem entra sozinho.</p>
       </section>
 
-      <section class="card">
-        <h2>Eventos</h2>
-        <ol class="events" id="events"></ol>
-      </section>
+      <details class="card events-box" id="events-box">
+        <summary>
+          <span class="events-title">Eventos</span>
+          <span class="events-last" id="events-last"></span>
+        </summary>
+        <ol class="events log" id="events"></ol>
+      </details>
 
       <section class="card" id="account">
-        <h2>Conta do jogo</h2>
-        <p id="account-user"></p>
-        <details>
-          <summary>Trocar caçador ou senha</summary>
+        <h2>Contas do jogo</h2>
+        <ul class="accounts" id="accounts"></ul>
+        <details id="add-account">
+          <summary>Adicionar conta ou trocar senha</summary>
           <form id="creds-form" class="form" autocomplete="off">
             <label>Nome de caçador
               <input name="username" required minlength="3" maxlength="64" autocomplete="off"
@@ -91,14 +94,18 @@
               <input name="password" type="password" required maxlength="128"
                      autocomplete="new-password">
             </label>
-            <button type="submit" class="button primary">Salvar</button>
+            <button type="submit" class="button primary">Salvar conta</button>
           </form>
+          <p class="hint">Um caçador que já está na lista fica com a senha nova.</p>
         </details>
         <p class="error" id="account-error" hidden></p>
+        <p class="hint">Trocar de conta fecha o navegador do servidor e entra com a outra. Uma
+          conta fica ativa em uma instância só: o jogo derrubaria as duas.</p>
         <div class="actions">
           <button type="button" class="button danger" id="delete-slot">Apagar minha instância</button>
         </div>
-        <p class="hint">Apagar fecha o navegador do servidor, apaga o cadastro e libera a vaga.</p>
+        <p class="hint">Apagar fecha o navegador do servidor, apaga todas as contas cadastradas e
+          libera a vaga.</p>
       </section>
     </div>
   </main>

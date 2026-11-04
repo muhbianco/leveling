@@ -44,6 +44,10 @@ class FakeDriver:
         self.calls.append("close")
         self.obs = Observation(Screen.CLOSED)
 
+    async def forget_session(self) -> None:
+        self.calls.append("forget")
+        self.obs = Observation(Screen.CLOSED)
+
     async def screenshot(self) -> bytes | None:
         return None
 

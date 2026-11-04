@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import shutil
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -81,6 +82,7 @@ class Driver(Protocol):
     async def reload(self) -> None: ...
     async def login(self, username: str, password: str) -> None: ...
     async def close(self) -> None: ...
+    async def forget_session(self) -> None: ...
     async def screenshot(self) -> bytes | None: ...
 
 
@@ -172,6 +174,13 @@ class GameDriver:
             await asyncio.wait_for(ctx.close(), CLOSE_TIMEOUT_S)
         except (PlaywrightError, TimeoutError) as exc:
             logger.warning("browser close failed: %s", type(exc).__name__)
+
+    async def forget_session(self) -> None:
+        """Fecha o navegador e apaga o perfil: o token da conta anterior (localStorage) vai junto
+        e a próxima abertura cai no login. Falha aqui sobe: um perfil apagado pela metade poderia
+        reabrir a conta velha com o painel mostrando a nova."""
+        await self.close()
+        await asyncio.to_thread(_remove_profile, self._profile)
 
     async def _open_game(self, page: Page) -> None:
         self._crashed = False
@@ -292,6 +301,11 @@ class GameDriver:
         if page is None or self._gone or page.is_closed():
             return None
         return await page.screenshot(type="jpeg", quality=60, timeout=SCREENSHOT_TIMEOUT_MS)
+
+
+def _remove_profile(profile: Path) -> None:
+    with contextlib.suppress(FileNotFoundError):
+        shutil.rmtree(profile)
 
 
 def _log_task_error(task: asyncio.Task[None]) -> None:
