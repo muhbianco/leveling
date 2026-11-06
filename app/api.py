@@ -30,8 +30,16 @@ from app.slots import ACCOUNT_ID_PATTERN, MAX_ACCOUNTS, SlotError, SlotManager, 
 from app.vnc import bridge
 
 WEB_DIR = Path(__file__).parent / "web"
-STATIC_FILES = {"app.js": "text/javascript", "styles.css": "text/css"}
+STATIC_FILES = {
+    "app.js": "text/javascript",
+    "styles.css": "text/css",
+    "remota.js": "text/javascript",
+    "remota.css": "text/css",
+}
 SCREENSHOT_MIN_INTERVAL_S = 2.0
+# Tela remota: o visor próprio (/remota, sobre o núcleo do noVNC) é o padrão; a UI do noVNC fica
+# de reserva em /vnc/vnc.html.
+REMOTE_URL = "/remota"
 NOVNC_QUERY = urlencode({"path": "vnc/ws", "autoconnect": "1", "resize": "scale", "reconnect": "1"})
 
 PAGE_HEADERS = {
@@ -298,8 +306,20 @@ def build_router(settings: Settings) -> APIRouter:
 
     # --- tela remota (noVNC) ----------------------------------------------------------------------
 
+    @router.get("/remota", response_class=HTMLResponse)
+    async def remote_screen(svc: Svc, sess: ReadSession) -> Response:
+        if svc.slots.for_email(sess.email) is None:
+            return RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
+        return FileResponse(WEB_DIR / "remota.html", media_type="text/html", headers=PAGE_HEADERS)
+
     @router.get("/vnc/")
     async def vnc_home(svc: Svc, sess: ReadSession) -> Response:
+        _runtime(svc, sess)
+        return RedirectResponse(REMOTE_URL, status_code=status.HTTP_303_SEE_OTHER)
+
+    @router.get("/vnc/padrao")
+    async def vnc_stock(svc: Svc, sess: ReadSession) -> Response:
+        """A UI padrão do noVNC, de reserva."""
         _runtime(svc, sess)
         return RedirectResponse(
             f"/vnc/vnc.html?{NOVNC_QUERY}", status_code=status.HTTP_303_SEE_OTHER
@@ -339,7 +359,7 @@ async def _status_response(svc: Services, sess: Session) -> JSONResponse:
             "accounts": [asdict(a) for a in accounts],
             "max_accounts": MAX_ACCOUNTS,
         }
-        payload["vnc_url"] = f"/vnc/vnc.html?{NOVNC_QUERY}"
+        payload["vnc_url"] = REMOTE_URL
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 

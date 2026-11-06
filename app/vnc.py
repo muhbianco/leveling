@@ -1,4 +1,4 @@
-"""Ponte WebSocket <-> TCP entre o noVNC do painel e o x11vnc do slot (127.0.0.1:5900+N-1).
+"""Ponte WebSocket <-> TCP entre o noVNC do painel e o X0tigervnc do slot (127.0.0.1:5900+N-1).
 
 Faz o papel do websockify, mas atrás da sessão Google do painel: sem sessão (ou com Origin de
 outro site) a conexão é recusada antes de abrir o TCP, e a porta vem do slot do e-mail da sessão,

@@ -21,10 +21,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 COPY --from=builder /opt/venv /opt/venv
 
-# Chromium do Playwright (com janela: sem o headless shell) e as libs dele; Xvfb + x11vnc + noVNC
-# para a tela remota do painel; tini como PID 1 (recolhe os filhos do Chromium).
+# Chromium do Playwright (com janela: sem o headless shell) e as libs dele; Xvfb + TigerVNC
+# (X0tigervnc: XDAMAGE, ContinuousUpdates e teto de quadros; o x11vnc não tem os dois últimos, ver
+# docs/tela-remota.md) + noVNC para a tela remota do painel; tini como PID 1 (recolhe os filhos do
+# Chromium).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends xvfb x11vnc novnc tini tzdata \
+    && apt-get install -y --no-install-recommends xvfb tigervnc-scraping-server novnc tini tzdata \
     && playwright install --with-deps --no-shell chromium \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
@@ -47,4 +49,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 # Um worker só: o estado do robô (fase, backoff, tela remota) vive neste processo.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--no-access-log"]
+# Sem permessage-deflate no WebSocket: a tela remota já vai em JPEG/zlib; recomprimir só gasta CPU.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--no-access-log", "--ws-per-message-deflate", "false"]

@@ -1,0 +1,78 @@
+/* Tela remota: a imagem do Chromium do slot ocupa tudo; a barra tem 32 px e pode ser escondida. */
+:root {
+  --bar-h: 32px;
+  --bg: #0d0c12;
+  --bar: #1c1926;
+  --text: #ece9f5;
+  --muted: #a39fb3;
+  --line: #2e2a3b;
+  --accent: #9b7bff;
+  --ok: #4cc47e;
+  --warn: #e0a440;
+  --bad: #ff6b5e;
+  --busy: #6aa0ff;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg); color: var(--text);
+  font: 13px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  touch-action: none;
+}
+
+.bar {
+  flex: none; height: var(--bar-h); display: flex; align-items: center; gap: 10px; padding: 0 8px;
+  background: var(--bar); border-bottom: 1px solid var(--line); overflow-x: auto; white-space: nowrap;
+}
+.bar[hidden] { display: none; }
+.group { display: flex; align-items: center; gap: 4px; }
+.bar button, .bar select {
+  height: 24px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line);
+  background: transparent; color: var(--text); font: inherit; cursor: pointer;
+}
+.bar button:hover, .bar select:hover { border-color: var(--accent); }
+.bar button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.bar button:disabled { opacity: 0.4; cursor: default; }
+.bar select { padding-right: 4px; }
+
+.state { font-weight: 600; margin-right: auto; }
+.state::before {
+  content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: 6px; background: var(--busy); vertical-align: 1px;
+}
+.state[data-tone="ok"]::before { background: var(--ok); }
+.state[data-tone="warn"]::before { background: var(--warn); }
+.state[data-tone="bad"]::before { background: var(--bad); }
+
+.show-bar {
+  position: fixed; top: 0; right: 8px; z-index: 5; height: 18px; padding: 0 10px;
+  border: 1px solid var(--line); border-top: none; border-radius: 0 0 8px 8px;
+  background: var(--bar); color: var(--muted); font: inherit; cursor: pointer; opacity: 0.7;
+}
+.show-bar:hover { opacity: 1; }
+.show-bar[hidden] { display: none; }
+
+#screen { flex: 1; min-height: 0; position: relative; overflow: auto; background: var(--bg); }
+/* O noVNC põe a imagem num <canvas> dentro de uma <div>; com "ajustar" ele escala pelo CSS. */
+#screen canvas { display: block; }
+
+.overlay {
+  position: fixed; inset: var(--bar-h) 0 0 0; z-index: 4; display: grid; place-items: center;
+  background: rgb(0 0 0 / 55%);
+}
+.overlay[hidden] { display: none; }
+.overlay-card {
+  max-width: 360px; padding: 18px; border-radius: 12px; background: var(--bar);
+  border: 1px solid var(--line); text-align: center;
+}
+.overlay-card p { margin: 0 0 12px; }
+.actions { display: flex; gap: 8px; justify-content: center; align-items: center; }
+.actions button {
+  padding: 8px 12px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent);
+  color: #fff; font: inherit; cursor: pointer;
+}
+.link { color: var(--accent); }
+
+body.holding #screen { outline: 2px solid var(--warn); outline-offset: -2px; }

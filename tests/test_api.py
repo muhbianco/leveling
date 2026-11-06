@@ -239,7 +239,8 @@ def test_index_without_session_is_login_page(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize(
-    "path", ["/api/status", "/api/events", "/api/screenshot", "/vnc/vnc.html", "/vnc/"]
+    "path",
+    ["/api/status", "/api/events", "/api/screenshot", "/vnc/vnc.html", "/vnc/", "/remota"],
 )
 def test_reads_require_session(client: TestClient, path: str) -> None:
     assert client.get(path).status_code == 401
@@ -759,8 +760,29 @@ def test_novnc_files_are_served_inside_the_folder_only(
     assert client.get("/vnc/../outside.txt").status_code == 404
     assert client.get("/vnc/%2e%2e/outside.txt").status_code == 404
     home = client.get("/vnc/")
-    assert home.status_code == 303
-    assert "path=vnc%2Fws" in home.headers["location"]
+    assert (home.status_code, home.headers["location"]) == (303, "/remota")
+    stock = client.get("/vnc/padrao")
+    assert stock.status_code == 303
+    assert "path=vnc%2Fws" in stock.headers["location"]
+
+
+def test_remote_screen_page(client: TestClient, google: FakeGoogle) -> None:
+    csrf = login(client, google, PLAYER)
+    # Sem instância a página manda de volta ao painel em vez de dar erro.
+    res = client.get("/remota")
+    assert (res.status_code, res.headers["location"]) == (303, "/")
+    create_instance(client, csrf)
+    res = client.get("/remota")
+    assert res.status_code == 200
+    assert "/static/remota.js" in res.text
+    assert "frame-ancestors 'none'" in res.headers["content-security-policy"]
+    assert res.headers["cache-control"] == "no-store"
+    assert client.get("/api/status").json()["vnc_url"] == "/remota"
+    for name, kind in (("remota.js", "text/javascript"), ("remota.css", "text/css")):
+        static = client.get(f"/static/{name}")
+        assert static.status_code == 200
+        assert static.headers["content-type"].startswith(kind)
+    assert "/vnc/core/rfb.js" in client.get("/static/remota.js").text
 
 
 def test_vnc_socket_needs_session(client: TestClient) -> None:

@@ -39,9 +39,9 @@ class Settings(BaseSettings):
     data_dir: Path = Path("/data")
 
     game_url: str = "https://levelingidle2d.com.br/jogar"
-    # Xvfb + x11vnc são do container; no desenvolvimento ficam desligados.
+    # Xvfb + X0tigervnc são do container; no desenvolvimento ficam desligados.
     manage_display: bool = True
-    # Slot N usa a tela :(display_base + N - 1) e o x11vnc em vnc_port_base + N - 1.
+    # Slot N usa a tela :(display_base + N - 1) e o servidor VNC em vnc_port_base + N - 1.
     display_base: int = 99
     screen_width: int = 1280
     screen_height: int = 720
@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     vnc_port_base: int = 5900
     novnc_dir: Path = Path("/usr/share/novnc")
     vnc_max_clients: int = 2
+    # Quadros por segundo que o X0tigervnc manda a cada cliente da tela remota (teto).
+    vnc_frame_rate: int = Field(default=30, ge=5, le=60)
 
     tick_seconds: float = 5.0
 

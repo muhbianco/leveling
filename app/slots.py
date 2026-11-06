@@ -1,7 +1,7 @@
 """Slots: uma instância do jogo por jogador liberado, no máximo `max_slots` ao mesmo tempo.
 
 Cada slot tem pasta própria em /data/slots/<id>/ (perfil do Chromium, state.json e as contas do
-jogo cifradas), tela própria (Xvfb + x11vnc) e supervisor próprio. O slot de uma requisição sai
+jogo cifradas), tela própria (Xvfb + X0tigervnc) e supervisor próprio. O slot de uma requisição sai
 da sessão Google (e-mail -> slot), nunca de um id vindo do navegador: um jogador não alcança a
 instância do outro.
 

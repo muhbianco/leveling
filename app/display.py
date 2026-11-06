@@ -1,7 +1,12 @@
-"""Tela virtual de um slot: Xvfb (onde o Chromium desenha) e x11vnc (a tela remota do painel).
+"""Tela virtual de um slot: Xvfb (onde o Chromium desenha) e X0tigervnc (a tela remota do painel).
 
-Os dois ficam vivos o tempo todo e são reiniciados se caírem. O x11vnc só escuta em 127.0.0.1:
-quem chega nele é a ponte autenticada de `vnc.py`.
+Os dois ficam vivos o tempo todo e são reiniciados se caírem. O servidor VNC só escuta em
+127.0.0.1: quem chega nele é a ponte autenticada de `vnc.py`.
+
+TigerVNC no lugar do x11vnc (06/11/2026, medido em docs/tela-remota.md): lê a tela pelo XDAMAGE
+em vez de varrer o framebuffer, manda quadros sem esperar pedido do cliente (ContinuousUpdates: a
+taxa não depende dos 230 ms de ida e volta até o jogador) e respeita um teto de quadros por
+segundo. No laboratório: metade da latência do clique e 70 % menos CPU que o x11vnc.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ READY_TIMEOUT_S = 15.0
 
 
 class Display:
-    """Uma tela por slot: cada jogador só alcança o próprio x11vnc."""
+    """Uma tela por slot: cada jogador só alcança o próprio servidor VNC."""
 
     def __init__(self, settings: Settings, display: str, vnc_port: int) -> None:
         self._settings = settings
@@ -44,18 +49,22 @@ class Display:
                 "-nolisten",
                 "tcp",
             ],
-            "x11vnc": [
-                "x11vnc",
+            "vnc": [
+                "X0tigervnc",
                 "-display",
                 self._display,
                 "-rfbport",
                 str(self._vnc_port),
-                "-localhost",
-                "-forever",
-                "-shared",
-                "-nopw",
-                "-quiet",
-                "-noxdamage",
+                "-localhost=1",
+                # Sem senha de VNC: a sessão Google do painel é a autenticação (ponte vnc.py).
+                "-SecurityTypes=None",
+                "-AlwaysShared=1",
+                # Teto de quadros: o jogo redesenha a tela inteira a 60 fps; 30 por segundo cortam a
+                # banda pela metade (0,6 a 0,8 MB/s na pior tela) por +30 ms de latência.
+                f"-FrameRate={s.vnc_frame_rate}",
+                # O teto padrão (35 % de um núcleo) faria o servidor espaçar os polls sozinho.
+                "-MaxProcessorUsage=100",
+                "-desktop=Leveling Keeper",
             ],
         }
 
@@ -63,7 +72,7 @@ class Display:
         commands = self._commands()
         self._tasks.append(asyncio.create_task(self._keep("Xvfb", commands["Xvfb"])))
         await self.wait_ready()
-        self._tasks.append(asyncio.create_task(self._keep("x11vnc", commands["x11vnc"])))
+        self._tasks.append(asyncio.create_task(self._keep("vnc", commands["vnc"])))
 
     async def wait_ready(self) -> None:
         # O Xvfb não avisa quando está pronto: o sinal é o socket aparecer.

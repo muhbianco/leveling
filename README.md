@@ -64,9 +64,15 @@ Um container, até 2 slots (`app/slots.py`):
 - FastAPI (painel, API e noVNC atrás da sessão Google). O slot de cada requisição sai do e-mail da
   sessão, nunca de um id vindo do navegador.
 - Por slot: supervisor asyncio (`app/supervisor.py` executa; `app/policy.py` decide, função pura),
-  Playwright → Chromium com janela num Xvfb próprio (slot 1 em `:99`, slot 2 em `:100`) e x11vnc
-  só em `127.0.0.1` (5900, 5901). A ponte `app/vnc.py` liga o WebSocket `/vnc/ws` ao x11vnc do
-  slot da sessão, depois de conferir sessão e Origin.
+  Playwright → Chromium com janela num Xvfb próprio (slot 1 em `:99`, slot 2 em `:100`) e
+  X0tigervnc (TigerVNC) só em `127.0.0.1` (5900, 5901). A ponte `app/vnc.py` liga o WebSocket
+  `/vnc/ws` ao servidor VNC do slot da sessão, depois de conferir sessão e Origin.
+- Tela remota: `/remota` é um visor próprio sobre o núcleo do noVNC (`app/web/remota.*`): barra
+  compacta, rolagem sem roda, "segurar" o botão para arrastar, Esc, qualidade nítida/rápida,
+  ajustar/1:1, tela cheia e reconexão. A UI padrão do noVNC fica de reserva em `/vnc/padrao`.
+  Por que TigerVNC e não x11vnc, com as medições: `docs/tela-remota.md`. Em resumo: XDAMAGE em vez
+  de varrer o framebuffer, quadros sem esperar pedido (a taxa não depende dos 230 ms de ida e
+  volta até o jogador) e teto de `VNC_FRAME_RATE` quadros/s (30).
 - Contas do jogo: o jogador cadastra pelo painel. A senha fica no volume cifrada com Fernet, e a
   chave (`DATA_KEY`) fica só no arquivo de segredos da hel1. Para o dono, o
   `GAME_USERNAME`/`GAME_PASSWORD` do arquivo de segredos aparece como mais uma conta na lista

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Tela remota · Leveling Keeper</title>
+  <link rel="stylesheet" href="/static/remota.css">
+  <script type="module" src="/static/remota.js"></script>
+</head>
+<body>
+  <header class="bar" id="bar">
+    <span class="state" id="state" data-tone="busy">conectando…</span>
+    <div class="group" role="group" aria-label="Rolagem">
+      <button type="button" id="scroll-up" title="Rolar para cima (Page Up). Segure para repetir.">▲</button>
+      <button type="button" id="scroll-down" title="Rolar para baixo (Page Down). Segure para repetir.">▼</button>
+      <button type="button" id="scroll-home" title="Início da página (Home)">⇈</button>
+      <button type="button" id="scroll-end" title="Fim da página (End)">⇊</button>
+    </div>
+    <div class="group" role="group" aria-label="Mouse e teclado">
+      <button type="button" id="drag-lock" aria-pressed="false"
+              title="Segurar o botão do mouse: clique no que quer arrastar, mova e clique de novo para soltar">Segurar</button>
+      <button type="button" id="esc" title="Enviar Esc">Esc</button>
+    </div>
+    <div class="group" role="group" aria-label="Imagem">
+      <select id="quality" title="Qualidade da imagem" aria-label="Qualidade da imagem">
+        <option value="nitida">Nítida</option>
+        <option value="rapida">Rápida</option>
+      </select>
+      <button type="button" id="fit" aria-pressed="true" title="Ajustar à janela (ou tamanho real, 1:1)">Ajustar</button>
+      <button type="button" id="fullscreen" title="Tela cheia">Tela cheia</button>
+      <button type="button" id="hide" title="Esconder a barra">▾</button>
+    </div>
+  </header>
+  <button type="button" class="show-bar" id="show-bar" title="Mostrar a barra" hidden>▴</button>
+  <main id="screen"></main>
+  <div class="overlay" id="overlay" hidden>
+    <div class="overlay-card">
+      <p id="overlay-text"></p>
+      <div class="actions">
+        <button type="button" id="reconnect">Reconectar agora</button>
+        <a href="/" class="link">Voltar ao painel</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
