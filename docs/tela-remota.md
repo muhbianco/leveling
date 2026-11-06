@@ -10,7 +10,9 @@ produção, do container na hel1 em 06/11/2026.
 
 1. **Chromium do slot** (Playwright, `app/game.py`) desenha a janela `1280x720` num **Xvfb**
    próprio (`:99`/`:100`, `app/display.py`). O WebGL do jogo roda em software (SwiftShader).
-   A barra do Chromium ocupa os ~88 px de cima: o jogo vê `1280x632`.
+   Até 06/11 a barra do Chromium ocupava os ~88 px de cima (o jogo via `1280x632`); desde a
+   mudança desta auditoria o Chromium abre em tela cheia (`--start-fullscreen`) e o jogo vê
+   `1280x720` (medido: viewport de 719 px com a flag, 632 sem).
 2. **x11vnc 0.9.16** (`-noxdamage -localhost -forever -shared -nopw -quiet`) lê o framebuffer do
    Xvfb por *polling* (32 passadas de linhas, `-wait 20 -defer 20` por padrão), codifica
    (Tight/JPEG, qualidade pedida pelo cliente) e fala RFB em `127.0.0.1:590N`.
@@ -68,8 +70,8 @@ RTT/2 + decodificação; com pedido-resposta soma mais um RTT por quadro.
 - **P0** CPU estrangulada (1); pedido-resposta sem *ContinuousUpdates* (2); x11vnc com polling
   cego (3).
 - **P1** Banda sem teto quando a tela anima (4); visor sem rolagem/tela cheia/qualidade (6).
-- **P2** Barra do Chromium dentro da imagem (88 px perdidos; cliques nela por engano); noVNC 1.3.0
-  (2022) do Debian; deflate inútil (7).
+- **P2** Barra do Chromium dentro da imagem (88 px perdidos; cliques nela por engano) — feito a
+  pedido do dono, Chromium em tela cheia; noVNC 1.3.0 (2022) do Debian; deflate inútil (7).
 - **P3** Arrastar texto selecionado (5): limitação do navegador, documentar; WebRTC.
 
 ## 4. Oportunidades por camada
@@ -134,8 +136,10 @@ lá"). Feito:
   segurar), ⇈⇊ (Home/End), "Segurar" (pressiona o botão no próximo clique e solta no seguinte,
   para arrastar sem manter apertado), Esc, qualidade nítida/rápida (JPEG 6 ou 2), ajustar/1:1,
   tela cheia. Reconexão com backoff 2–30 s e contagem na tela; "Reconectar agora".
-- **Testes:** `tests/test_display.py` (flags do servidor VNC) e `/remota`, `/vnc/`, `/vnc/padrao`,
-  estáticos e `vnc_url` em `tests/test_api.py`. 134 testes.
+- **Chromium em tela cheia** (`--start-fullscreen` em `app/game.py`, pedido do dono depois do
+  primeiro deploy): o jogo ocupa os 1280x720 inteiros; F11 na tela remota alterna.
+- **Testes:** `tests/test_display.py` (flags do servidor VNC), `tests/test_game.py` (tela cheia) e
+  `/remota`, `/vnc/`, `/vnc/padrao`, estáticos e `vnc_url` em `tests/test_api.py`. 135 testes.
 - **Smoke da imagem real:** container sobe, `/healthz` 200, Xvfb + X0tigervnc de pé, VNC só em
   `127.0.0.1:5900`.
 - **Visor verificado no navegador** contra o container do laboratório: conecta (1280×720,

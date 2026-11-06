@@ -73,6 +73,9 @@ CHROMIUM_ARGS = (
     "--disable-backgrounding-occluded-windows",
     # Sem GPU no servidor: WebGL do Phaser pelo renderizador de software do próprio Chromium.
     "--enable-unsafe-swiftshader",
+    # Tela cheia (como F11): o jogo ocupa os 1280x720 inteiros da tela remota, sem a barra de abas
+    # e endereço roubando 88 px nem recebendo clique por engano. F11 na tela remota sai e volta.
+    "--start-fullscreen",
 )
 
 

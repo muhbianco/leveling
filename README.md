@@ -64,7 +64,8 @@ Um container, até 2 slots (`app/slots.py`):
 - FastAPI (painel, API e noVNC atrás da sessão Google). O slot de cada requisição sai do e-mail da
   sessão, nunca de um id vindo do navegador.
 - Por slot: supervisor asyncio (`app/supervisor.py` executa; `app/policy.py` decide, função pura),
-  Playwright → Chromium com janela num Xvfb próprio (slot 1 em `:99`, slot 2 em `:100`) e
+  Playwright → Chromium em tela cheia (`--start-fullscreen`: o jogo fica com os 1280x720
+  inteiros; F11 na tela remota alterna) num Xvfb próprio (slot 1 em `:99`, slot 2 em `:100`) e
   X0tigervnc (TigerVNC) só em `127.0.0.1` (5900, 5901). A ponte `app/vnc.py` liga o WebSocket
   `/vnc/ws` ao servidor VNC do slot da sessão, depois de conferir sessão e Origin.
 - Tela remota: `/remota` é um visor próprio sobre o núcleo do noVNC (`app/web/remota.*`): barra

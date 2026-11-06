@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.game import GameDriver
+from app.game import CHROMIUM_ARGS, GameDriver
 from app.policy import Screen
 from tests.test_supervisor import FakeClock
 
@@ -67,3 +67,10 @@ async def test_failed_probe_before_the_game_is_still_loading() -> None:
     page.fail = True
     driver._touch()
     assert (await driver.observe()).screen is Screen.LOADING
+
+
+def test_chromium_takes_the_whole_screen() -> None:
+    """Tela cheia desde o início: o jogo fica com os 1280x720 da tela remota (sem a barra de abas,
+    que roubava 88 px e recebia clique por engano). Medido no laboratório: viewport 719 px de altura
+    com a flag, 632 sem."""
+    assert "--start-fullscreen" in CHROMIUM_ARGS
