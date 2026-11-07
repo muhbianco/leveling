@@ -4,13 +4,15 @@ read-only (/run/leveling/secrets.env), relido a cada uso para que trocar a senha
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 GOOGLE_ISSUER = "https://accounts.google.com"
@@ -27,8 +29,19 @@ class Settings(BaseSettings):
     admin_emails: str = ""
     # Outros jogadores liberados: cada um cadastra o próprio caçador pelo painel.
     player_emails: str = ""
-    # Instâncias ao mesmo tempo. O jogo derruba todas acima de 2 contas pelo mesmo IP.
-    max_slots: int = Field(default=2, ge=1, le=2)
+    # Instâncias ao mesmo tempo. O jogo derruba todas acima de 2 contas pelo mesmo IP: os slots
+    # acima de `direct_slots` mandam o tráfego do servidor do jogo pelo proxy de saída
+    # (app/egress.py), que sai pelo segundo IPv4 da hel1. Pessoas diferentes, uma conta cada,
+    # sem troca de itens: o dev do jogo confirmou em 06/11/2026 que isso não é multi-conta (README,
+    # "Slots e IPs").
+    max_slots: int = Field(default=2, ge=1, le=4)
+    # Até este slot (inclusive) a saída é direta, pelo IP principal da hel1.
+    direct_slots: int = Field(default=2, ge=1, le=4)
+    # socks5://host:porta do app/egress.py. Vazio = nenhum slot acima de direct_slots.
+    egress_proxy: str = ""
+    # Só estes hosts passam pelo proxy (o resto do Chromium sai direto): o limite por IP é do
+    # servidor do jogo, não do site.
+    egress_hosts: str = "game.levelingidle2d.com.br"
     google_client_id: str = ""
     google_oidc_authorize_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
     google_oidc_token_url: str = "https://oauth2.googleapis.com/token"  # noqa: S105 (a URL)
@@ -80,6 +93,32 @@ class Settings(BaseSettings):
 
     def vnc_port_for(self, slot_id: int) -> int:
         return self.vnc_port_base + slot_id - 1
+
+    @model_validator(mode="after")
+    def _egress_covers_extra_slots(self) -> Settings:
+        if self.max_slots > self.direct_slots and not self.egress_proxy:
+            raise ValueError("MAX_SLOTS acima de DIRECT_SLOTS exige EGRESS_PROXY (segundo IP)")
+        if self.egress_proxy:
+            parts = urlsplit(self.egress_proxy)
+            if parts.scheme != "socks5" or not parts.hostname or not parts.port:
+                raise ValueError("EGRESS_PROXY precisa ser socks5://host:porta")
+        return self
+
+    def proxy_pac(self, slot_id: int) -> str | None:
+        """PAC (como data: URL) para o Chromium do slot: só os hosts do jogo vão pelo proxy de
+        saída; o resto sai direto. None para os slots de saída direta."""
+        if slot_id <= self.direct_slots or not self.egress_proxy:
+            return None
+        parts = urlsplit(self.egress_proxy)
+        hosts = ", ".join(json.dumps(h) for h in _emails(self.egress_hosts))
+        pac = (
+            "function FindProxyForURL(url, host) {"
+            f" if ([{hosts}].indexOf(host.toLowerCase()) !== -1)"
+            f' return "SOCKS5 {parts.hostname}:{parts.port}";'
+            ' return "DIRECT"; }'
+        )
+        encoded = base64.b64encode(pac.encode()).decode()
+        return f"data:application/x-ns-proxy-autoconfig;base64,{encoded}"
 
 
 def _emails(raw: str) -> tuple[str, ...]:

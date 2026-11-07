@@ -5,9 +5,9 @@ jogo cifradas), tela própria (Xvfb + X0tigervnc) e supervisor próprio. O slot 
 da sessão Google (e-mail -> slot), nunca de um id vindo do navegador: um jogador não alcança a
 instância do outro.
 
-O teto de 2 é do próprio jogo: acima de 2 contas pelo mesmo IP, ele derruba todas. Pelo mesmo
-motivo uma conta do jogo só fica ativa em uma vaga: duas vagas na mesma conta gastariam as duas
-vagas de IP e uma derrubaria a outra ("acessada em outro dispositivo").
+O jogo derruba todas as contas acima de 2 pelo mesmo IP: os slots acima de DIRECT_SLOTS saem
+por outro IP (app/egress.py). Uma conta do jogo só fica ativa em uma vaga: duas vagas na mesma
+conta se derrubariam ("acessada em outro dispositivo").
 """
 
 from __future__ import annotations

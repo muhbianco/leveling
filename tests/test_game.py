@@ -74,3 +74,11 @@ def test_chromium_takes_the_whole_screen() -> None:
     que roubava 88 px e recebia clique por engano). Medido no laboratório: viewport 719 px de altura
     com a flag, 632 sem."""
     assert "--start-fullscreen" in CHROMIUM_ARGS
+
+
+def test_proxy_pac_becomes_a_chromium_flag() -> None:
+    settings = Settings(manage_display=False, max_slots=3, egress_proxy="socks5://172.17.0.1:1080")
+    direct = GameDriver(settings, None, Path("p1"), ":99", proxy_pac=settings.proxy_pac(1))  # type: ignore[arg-type]
+    via_proxy = GameDriver(settings, None, Path("p3"), ":101", proxy_pac=settings.proxy_pac(3))  # type: ignore[arg-type]
+    assert direct._proxy_pac is None
+    assert via_proxy._proxy_pac is not None and via_proxy._proxy_pac.startswith("data:")

@@ -252,9 +252,31 @@ def test_slot_displays_and_ports_do_not_collide() -> None:
     assert s.max_slots == 2
 
 
-def test_max_slots_cannot_pass_the_game_limit() -> None:
-    with pytest.raises(ValueError, match="max_slots"):
+def test_slots_above_direct_need_the_egress_proxy() -> None:
+    with pytest.raises(ValueError, match="EGRESS_PROXY"):
         Settings(max_slots=3)
+    with pytest.raises(ValueError, match="socks5"):
+        Settings(max_slots=3, egress_proxy="http://172.17.0.1:1080")
+    with pytest.raises(ValueError, match="max_slots"):
+        Settings(max_slots=5, egress_proxy="socks5://172.17.0.1:1080")
+    ok = Settings(max_slots=3, egress_proxy="socks5://172.17.0.1:1080")
+    assert [ok.display_for(i) for i in (1, 2, 3)] == [":99", ":100", ":101"]
+    assert [ok.vnc_port_for(i) for i in (1, 2, 3)] == [5900, 5901, 5902]
+
+
+def test_proxy_pac_only_for_slots_above_direct() -> None:
+    s = Settings(max_slots=3, egress_proxy="socks5://172.17.0.1:1080")
+    assert s.proxy_pac(1) is None
+    assert s.proxy_pac(2) is None
+    pac = s.proxy_pac(3)
+    assert pac is not None and pac.startswith("data:application/x-ns-proxy-autoconfig;base64,")
+    import base64
+
+    script = base64.b64decode(pac.split(",", 1)[1]).decode()
+    assert '"game.levelingidle2d.com.br"' in script
+    assert 'return "SOCKS5 172.17.0.1:1080"' in script
+    assert 'return "DIRECT"' in script  # o site e o resto saem pelo IP principal
+    assert Settings().proxy_pac(3) is None  # sem proxy configurado, nada muda
 
 
 def test_player_emails_join_the_allowlist() -> None:

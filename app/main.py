@@ -54,7 +54,9 @@ def runtime_factory(
         display = Display(cfg, display_name, vnc_port) if cfg.manage_display else None
         if display is not None:
             await display.start()
-        driver = GameDriver(cfg, pw, slot_dir / "profile", display_name)
+        driver = GameDriver(
+            cfg, pw, slot_dir / "profile", display_name, proxy_pac=cfg.proxy_pac(record.id)
+        )
         store = StateStore(slot_dir / "state.json")
         await store.load()
         supervisor = Supervisor(

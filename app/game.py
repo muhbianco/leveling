@@ -105,12 +105,15 @@ class GameDriver:
         profile_dir: Path,
         display: str,
         clock: Callable[[], float] = time.monotonic,
+        proxy_pac: str | None = None,
     ) -> None:
         self._settings = settings
         self._pw = playwright
         self._profile = profile_dir
         self._display = display
         self._clock = clock
+        # Slot acima de DIRECT_SLOTS: o servidor do jogo vai pelo proxy de saída (segundo IP).
+        self._proxy_pac = proxy_pac
         self._ctx: BrowserContext | None = None
         self._page: Page | None = None
         self._gone = False  # contexto fechou sem a gente pedir (Chromium morreu)
@@ -129,12 +132,15 @@ class GameDriver:
         await asyncio.to_thread(profile.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(clear_profile_locks, profile)
         width, height = self._settings.screen_width, self._settings.screen_height
+        args = [*CHROMIUM_ARGS, f"--window-size={width},{height}"]
+        if self._proxy_pac:
+            args.append(f"--proxy-pac-url={self._proxy_pac}")
         ctx = await self._pw.chromium.launch_persistent_context(
             user_data_dir=str(profile),
             headless=False,
             no_viewport=True,
             locale="pt-BR",
-            args=[*CHROMIUM_ARGS, f"--window-size={width},{height}"],
+            args=args,
             # No Linux o idioma da interface vem do LANGUAGE (o --lang não vale): pt-BR como a
             # página, então o Chromium não oferece o Tradutor por cima do jogo.
             env={

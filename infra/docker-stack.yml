@@ -42,7 +42,11 @@ services:
       PUBLIC_URL: https://leveling.muhbianco.com.br
       ADMIN_EMAILS: ${ADMIN_EMAILS:?ADMIN_EMAILS obrigatorio}
       PLAYER_EMAILS: ${PLAYER_EMAILS:-}
-      MAX_SLOTS: "2"
+      # 3 pessoas: slots 1-2 saem pelo IP principal da hel1; o 3 manda o servidor do jogo pelo
+      # serviço `egress` (abaixo), que sai pelo floating IP. O jogo conta 2 contas por IP.
+      MAX_SLOTS: "3"
+      DIRECT_SLOTS: "2"
+      EGRESS_PROXY: socks5://172.17.0.1:1080
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID obrigatorio}
       SECRETS_FILE: /run/leveling/secrets.env
       DATA_DIR: /data
@@ -72,11 +76,11 @@ services:
         # software, sem GPU) gasta 1,3 núcleo e o renderer 0,15; o servidor VNC + Xvfb somam até
         # 0,2 com a tela remota aberta. Duas instâncias pedem ~3,0–3,3. Com o teto antigo de 2,0 o
         # container ficava estrangulado 87 % do tempo (cliques atrasados, sonda do DOM estourando).
-        # 3,5 cobre as duas sem tomar a hel1 (8 núcleos, carga 1–4), que roda as outras stacks.
-        # Memória: ~1,4 GB usados com as duas jogando.
+        # Três instâncias (06/11/2026) pedem ~4,4 jogando juntas; 4,5 deixa 3,5 núcleos para as
+        # outras stacks da hel1 (8 núcleos, carga 1–4). Memória: ~0,75 GB por instância jogando.
         limits:
-          cpus: "3.5"
-          memory: 3072M
+          cpus: "4.5"
+          memory: 4096M
         reservations:
           cpus: "0.25"
           memory: 512M
@@ -98,6 +102,40 @@ services:
         - traefik.http.middlewares.leveling_headers.headers.customFrameOptionsValue=DENY
         - traefik.http.middlewares.leveling_headers.headers.customResponseHeaders.X-Robots-Tag=noindex, nofollow
 
+  # Proxy de saída (app/egress.py): SOCKS5 só para o servidor do jogo, saindo pelo floating IP
+  # da hel1 (EGRESS_BIND, no Env da stack; o IP fica em /etc/netplan/60-floating-ip.yaml no
+  # host). Rede do host para poder usar esse IP como origem; escuta só em 172.17.0.1 (docker0),
+  # que a internet não alcança. Sem senha: só os containers da hel1 chegam lá.
+  egress:
+    image: muhrilobianco/leveling-keeper:${LEVELING_TAG:?LEVELING_TAG obrigatorio}
+    command: ["python", "-m", "app.egress"]
+    logging: *logging
+    environment:
+      LOG_LEVEL: INFO
+      EGRESS_LISTEN: 172.17.0.1:1080
+      EGRESS_BIND: ${EGRESS_BIND:?EGRESS_BIND (floating IP) obrigatorio}
+      EGRESS_ALLOW: game.levelingidle2d.com.br:8443
+    networks:
+      - hostnet
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('172.17.0.1', 1080), 3).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+        reservations:
+          memory: 16M
+
 volumes:
   data:
 
@@ -105,3 +143,6 @@ networks:
   chatbot-net:
     external: true
     name: chatbot-net
+  hostnet:
+    external: true
+    name: host

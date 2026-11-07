@@ -92,7 +92,7 @@ function renderSetup(s) {
   const full = s.capacity.used >= s.capacity.max;
   const free = s.capacity.max - s.capacity.used;
   $("setup-capacity").textContent = full
-    ? `Sem vaga: o servidor já roda ${s.capacity.max} instâncias, o limite do jogo por internet.`
+    ? `Sem vaga: o servidor já roda ${s.capacity.max} instâncias.`
     : `Informe o caçador e a senha do jogo para criar sua instância (${free} de ${s.capacity.max} vagas livres).`;
   for (const el of $("setup-form").elements) el.disabled = full;
 }

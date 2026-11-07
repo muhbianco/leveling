@@ -4,10 +4,16 @@ Mantém a sessão do [Leveling Idle](https://levelingidle2d.com.br/jogar) aberta
 navegador do jogador não pode ficar aberto. O painel fica em `https://leveling.muhbianco.com.br`, só
 para os e-mails Google de `ADMIN_EMAILS` (dono) e `PLAYER_EMAILS` (jogadores liberados).
 
-- **Uma instância por jogador, no máximo 2.** O jogador entra com o Google, informa caçador e senha
-  do jogo e ganha a própria instância (Chromium, tela e tela remota próprios). Cada conta Google só
-  vê e controla a própria. O teto de 2 é do jogo: acima de 2 contas pelo mesmo IP, ele derruba
-  todas.
+- **Uma instância por jogador, no máximo 3 (`MAX_SLOTS`).** O jogador entra com o Google, informa
+  caçador e senha do jogo e ganha a própria instância (Chromium, tela e tela remota próprios).
+  Cada conta Google só vê e controla a própria.
+- **Slots e IPs.** O jogo derruba todas as contas acima de 2 pelo mesmo IP. Os slots 1 e 2 saem
+  pelo IP principal da hel1; o slot 3 manda só o tráfego do servidor do jogo
+  (`game.levelingidle2d.com.br:8443`) por um proxy SOCKS5 nosso (`app/egress.py`, serviço
+  `egress` da stack) que sai pelo floating IP da Hetzner. Isso vale para **pessoas diferentes, uma
+  conta cada, sem troca de itens ou gold entre as contas**: foi o que o dev do jogo (Jumpy, Discord,
+  06/11/2026) disse que não é multi-conta; o limite deles é por pessoa e eles verificam
+  comportamento. Não é para uma pessoa com várias contas.
 - **Várias contas do jogo por instância.** O jogador cadastra até 20 contas (caçador + senha) e
   escolhe qual a instância usa. Trocar de conta fecha o Chromium e apaga o perfil da instância
   (o token da conta anterior mora nele), então a próxima abertura entra com a conta nova. A chave
