@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.config import Secrets, read_secrets
+from app.game import LoginFormError
 from app.policy import (
     CONFIRM_WINDOW_SECONDS,
     MAX_ATTEMPTS_PER_HOUR,
@@ -33,6 +34,7 @@ class FakeDriver:
         self.obs = Observation(Screen.CLOSED)
         self.calls: list[str] = []
         self.logins: list[tuple[str, str]] = []
+        self.login_error: Exception | None = None
 
     async def observe(self) -> Observation:
         return self.obs
@@ -47,6 +49,8 @@ class FakeDriver:
     async def login(self, username: str, password: str) -> None:
         self.calls.append("login")
         self.logins.append((username, password))
+        if self.login_error is not None:
+            raise self.login_error
 
     async def close(self) -> None:
         self.calls.append("close")
@@ -177,6 +181,26 @@ async def test_login_spacing_and_latch(
     os.utime(secrets_file, (stat.st_atime, stat.st_mtime + 10))
     assert (await sup.tick()).action is Action.LOGIN
     assert driver.logins[-1] == ("hunter", "pw2")
+
+
+async def test_form_that_does_not_hold_the_typing_is_reported(
+    sup: Supervisor, driver: FakeDriver, clock: FakeClock, store: StateStore
+) -> None:
+    """Regressão de 10/11/2026: a senha ficou duas vezes no campo e o painel passou minutos em
+    "entrando" sem dizer nada. Agora o keeper não envia e avisa; as tentativas seguem com teto."""
+
+    driver.login_error = LoginFormError()
+    await sup.set_power(True)
+    driver.obs = Observation(Screen.LOGIN)
+    assert (await sup.tick()).action is Action.LOGIN
+    event = store.events(1)[0]
+    assert (event.kind, "nada foi enviado" in event.message) == ("aviso", True)
+
+    for _ in range(MAX_LOGINS_BEFORE_LATCH - 1):
+        clock.now += LOGIN_SPACING_S
+        assert (await sup.tick()).action is Action.LOGIN
+    clock.now += LOGIN_SPACING_S
+    assert (await sup.tick()).phase is Phase.PRECISA_LOGIN
 
 
 async def test_retry_login_from_panel(

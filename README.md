@@ -48,6 +48,17 @@ para os e-mails Google de `ADMIN_EMAILS` (dono) e `PLAYER_EMAILS` (jogadores lib
 - **Única interação:** preencher o login quando o token cai, no máximo 1 tentativa a cada 2 min
   (o jogo pode levar mais de 1 min carregando depois do login). Depois de 3 tentativas sem entrar,
   trava até a senha mudar ou o jogador clicar "Tentar login de novo".
+- **O login confere antes de enviar.** O keeper só clica em "Entrar" com os dois campos iguais ao
+  usuário e à senha; o que estiver diferente ele redigita (até 3 rodadas) e, se não firmar, não
+  envia nada e avisa nos eventos.
+- **O gerenciador de senhas do Chromium fica de fora.** A cada abertura o keeper apaga o cofre do
+  perfil (`Default/Login Data*`) e desliga a oferta de "Salvar senha?" (`credentials_enable_service`
+  no `Preferences`). O Playwright 1.64 não liga `--enable-automation`, então sem isso o gerenciador
+  funciona como num Chromium comum. Em 10/11/2026 os slots 1 e 2 tinham a senha do jogo salva: o
+  Chromium preenchia o formulário junto com o keeper e, quando caía entre o selecionar e o inserir
+  do `fill`, o campo ficava com o texto duas vezes (medido na imagem do keeper, com senha salva e
+  CPU apertada: 16 logins errados em 250; com a conferência, 0 em 250). Senha salva ali também
+  fica no volume praticamente em claro (`--password-store=basic`), fora da cifragem das contas.
 - **Confirmação antes de entrar de novo.** O primeiro login depois de ligar é livre. Se o token
   cair depois de o robô já ter jogado nesse ciclo, ele segura o login por 15 s e abre um modal no
   painel. O título da aba conta os segundos, mesmo com a aba em segundo plano.

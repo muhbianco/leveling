@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import shutil
@@ -24,6 +25,7 @@ from playwright.async_api import Error as PlaywrightError
 
 from app.config import Settings
 from app.policy import SIGNAL_STALE_SECONDS, BlockMatcher, Observation, Screen, locale_texts
+from app.state import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,32 @@ ACTION_TIMEOUT_MS = 15_000
 PROBE_TIMEOUT_S = 5.0
 SCREENSHOT_TIMEOUT_MS = 10_000
 CLOSE_TIMEOUT_S = 20.0
+
+# O `fill` do Playwright são dois passos (seleciona o campo, depois insere o texto): quem mexer no
+# campo entre um e outro deixa o texto dobrado. Por isso o login confere os campos antes de enviar
+# e redigita o que estiver diferente, no máximo este número de vezes.
+FILL_ROUNDS = 3
+# Espera entre digitar e conferir: um preenchimento atrasado de terceiro aparece na conferência.
+FILL_SETTLE_S = 0.4
+
+# Cofre de senhas do Chromium, em <perfil>/Default. Com `--password-store=basic` a senha fica ali
+# praticamente em claro, fora da cifragem do `accounts.json`.
+PASSWORD_STORE_FILES = (
+    "Login Data",
+    "Login Data-journal",
+    "Login Data For Account",
+    "Login Data For Account-journal",
+)
+# Preferências do perfil: sem oferta de "Salvar senha?" e sem login automático do Chromium.
+PASSWORD_MANAGER_PREFS = {
+    "credentials_enable_service": False,
+    "credentials_enable_autosignin": False,
+}
+
+
+class LoginFormError(Exception):
+    """Os campos do login não ficaram com o usuário e a senha digitados. Nada foi enviado."""
+
 
 # Só leitura. `.slScreen.slAuth` é a tela inicial/login, `.slScreen.slBlock` o bloqueio
 # ("Sessão encerrada", manutenção, falha) e o canvas do Phaser em #game aparece dentro do jogo.
@@ -97,6 +125,40 @@ def clear_profile_locks(profile: Path) -> None:
             (profile / name).unlink()
 
 
+def silence_password_manager(profile: Path) -> None:
+    """O login é do keeper, não do gerenciador de senhas do Chromium.
+
+    Regressão de 10/11/2026: o campo da senha apareceu com a senha duas vezes e o login não entrou.
+    O Chromium tinha a senha do jogo salva no perfil dos slots 1 e 2 (o Playwright 1.64 não liga
+    `--enable-automation`, então o gerenciador de senhas fica ativo) e preenchia o formulário por
+    conta própria, na mesma hora em que o keeper digitava.
+
+    A cada abertura, com o Chromium fechado: apaga o cofre (some a senha salva e, com ela, o
+    preenchimento automático) e desliga a oferta de salvar. Falha de disco sobe para quem abre: é
+    melhor não abrir do que abrir com a senha salva.
+    """
+    default = profile / "Default"
+    for name in PASSWORD_STORE_FILES:
+        with contextlib.suppress(FileNotFoundError):
+            (default / name).unlink()
+
+    path = default / "Preferences"
+    try:
+        prefs = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        prefs = {}  # perfil novo: o Chromium parte deste arquivo
+    except ValueError:
+        # Arquivo cortado: o Chromium recria sozinho. O cofre já saiu e o login confere os campos.
+        logger.warning("profile preferences unreadable, left as is")
+        return
+    if not isinstance(prefs, dict):
+        return
+    if all(prefs.get(key) is value for key, value in PASSWORD_MANAGER_PREFS.items()):
+        return
+    prefs.update(PASSWORD_MANAGER_PREFS)
+    write_json_atomic(path, prefs)
+
+
 class GameDriver:
     def __init__(
         self,
@@ -131,6 +193,7 @@ class GameDriver:
         profile = self._profile
         await asyncio.to_thread(profile.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(clear_profile_locks, profile)
+        await asyncio.to_thread(silence_password_manager, profile)
         width, height = self._settings.screen_width, self._settings.screen_height
         args = [*CHROMIUM_ARGS, f"--window-size={width},{height}"]
         if self._proxy_pac:
@@ -296,6 +359,10 @@ class GameDriver:
     # --- única interação: login ----------------------------------------------------------
 
     async def login(self, username: str, password: str) -> None:
+        """Só envia com os dois campos exatamente iguais ao usuário e à senha: confere depois de
+        digitar e redigita só o campo que estiver diferente (mexer no usuário de novo poderia
+        chamar outro preenchimento da senha). Se não firmar, sobe `LoginFormError` sem enviar:
+        mandar uma senha errada só gasta tentativa e deixa o painel em "entrando" à toa."""
         page = self._page
         if page is None:
             return
@@ -306,9 +373,22 @@ class GameDriver:
         tab = page.locator(LOGIN_TAB)
         if await tab.count() and LOGIN_TAB_ON not in (await tab.get_attribute("class") or ""):
             await tab.click(timeout=ACTION_TIMEOUT_MS)
-        await page.locator(LOGIN_USER).fill(username, timeout=ACTION_TIMEOUT_MS)
-        await page.locator(LOGIN_PASSWORD).fill(password, timeout=ACTION_TIMEOUT_MS)
-        await page.locator(LOGIN_SUBMIT).click(timeout=ACTION_TIMEOUT_MS)
+        fields = (
+            (page.locator(LOGIN_USER), username),
+            (page.locator(LOGIN_PASSWORD), password),
+        )
+        for _ in range(FILL_ROUNDS):
+            for field, value in fields:
+                if await field.input_value(timeout=ACTION_TIMEOUT_MS) != value:
+                    await field.fill(value, timeout=ACTION_TIMEOUT_MS)
+            await asyncio.sleep(FILL_SETTLE_S)
+            held = True
+            for field, value in fields:
+                held = held and await field.input_value(timeout=ACTION_TIMEOUT_MS) == value
+            if held:
+                await page.locator(LOGIN_SUBMIT).click(timeout=ACTION_TIMEOUT_MS)
+                return
+        raise LoginFormError
 
     async def screenshot(self) -> bytes | None:
         page = self._page

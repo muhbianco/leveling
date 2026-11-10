@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from playwright.async_api import Error as PlaywrightError
 
 from app.config import Secrets
-from app.game import Driver
+from app.game import Driver, LoginFormError
 from app.policy import (
     CONFIRM_WINDOW_SECONDS,
     SIGNAL_STALE_SECONDS,
@@ -225,6 +225,14 @@ class Supervisor:
                 try:
                     await self._driver.login(
                         self._secrets.game_username, self._secrets.game_password
+                    )
+                except LoginFormError:
+                    # Conta como tentativa (o teto de 3 continua valendo), mas nada foi enviado.
+                    logger.warning("%s: login form did not hold the typed values", self._name)
+                    await self._store.add_event(
+                        "aviso",
+                        "O formulário de login não ficou com o usuário e a senha digitados: "
+                        "nada foi enviado, o keeper tenta de novo",
                     )
                 except (PlaywrightError, TimeoutError) as exc:
                     # Só o tipo: mensagem de erro do Playwright não leva valor, mas não arriscamos.
