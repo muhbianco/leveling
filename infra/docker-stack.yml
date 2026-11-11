@@ -13,10 +13,15 @@
 # Env da stack (via hel1-ops/scripts/portainer-stack-update.py, que reenvia todas as chaves):
 #   LEVELING_TAG       sha12 da imagem (o pipeline troca a cada deploy)
 #   GOOGLE_CLIENT_ID   cliente OAuth "Leveling Keeper" (não é segredo)
-#   ADMIN_EMAILS       dono(s): entram no painel; o primeiro herda a instância de antes dos slots
+#   ADMIN_EMAILS       admins (vírgula): veem as instâncias dos outros e pedem acesso à tela
+#                      remota delas. O PRIMEIRO é o dono: herda a instância de antes dos slots e é
+#                      o único que usa a conta do jogo do arquivo de segredos
 #   PLAYER_EMAILS      outros jogadores liberados (vírgula); cada um cadastra o próprio caçador
+#   PLAYER_PHONES      WhatsApp de cada jogador para o pedido de acesso (`email=telefone`,
+#                      vírgula; fora do git). Sem telefone, o pedido fica só no painel do dono
 # Segredos NÃO ficam no Env: /root/leveling-secrets/secrets.env (GAME_USERNAME, GAME_PASSWORD,
-# GOOGLE_CLIENT_SECRET, DATA_KEY), criado por infra/install-secrets.sh e montado read-only. O app
+# GOOGLE_CLIENT_SECRET, DATA_KEY, WUZAPI_BASE_URL, WUZAPI_SESSION_TOKEN), criado por
+# infra/install-secrets.sh (`--wuzapi` copia a sessão do MegaPromoOz) e montado read-only. O app
 # relê o arquivo a cada ciclo: trocar a senha não pede redeploy. Senhas cadastradas pelo painel
 # ficam no volume cifradas com a DATA_KEY (que não fica no volume).
 #
@@ -42,6 +47,7 @@ services:
       PUBLIC_URL: https://leveling.muhbianco.com.br
       ADMIN_EMAILS: ${ADMIN_EMAILS:?ADMIN_EMAILS obrigatorio}
       PLAYER_EMAILS: ${PLAYER_EMAILS:-}
+      PLAYER_PHONES: ${PLAYER_PHONES:-}
       # 3 pessoas: slots 1-2 saem pelo IP principal da hel1; o 3 manda o servidor do jogo pelo
       # serviço `egress` (abaixo), que sai pelo floating IP. O jogo conta 2 contas por IP.
       MAX_SLOTS: "3"

@@ -208,6 +208,23 @@ async def test_provider_uses_the_active_account(tmp_path: Path) -> None:
     assert (await credentials_provider(settings, accounts, player)()).source == SOURCE_NONE
 
 
+async def test_only_the_first_admin_uses_the_server_account(tmp_path: Path) -> None:
+    """Todos os jogadores admin (painel compartilhado): a conta do arquivo continua do dono."""
+    path = tmp_path / "secrets.env"
+    path.write_text(f"GAME_USERNAME=owner\nGAME_PASSWORD=opw\nDATA_KEY={KEY}\n", encoding="utf-8")
+    settings = Settings(
+        admin_emails=f"{OWNER},{PLAYER}", secrets_file=path, data_dir=tmp_path / "data"
+    )
+    registry = SlotRegistry(settings.data_dir, 2)
+    registry.load(None)
+    accounts = AccountStore(registry)
+    owner = registry.add(OWNER)
+    admin = registry.add(PLAYER)
+    assert (await credentials_provider(settings, accounts, owner)()).source == SOURCE_SERVER
+    accounts.set_active(admin.id, SERVER_ACCOUNT_ID)
+    assert (await credentials_provider(settings, accounts, admin)()).source == SOURCE_NONE
+
+
 async def test_manager_skips_accounts_no_longer_allowed(tmp_path: Path) -> None:
     settings = make_settings(tmp_path, f"DATA_KEY={KEY}\n")
     registry = SlotRegistry(settings.data_dir, 2)

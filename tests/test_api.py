@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from jwt.algorithms import RSAAlgorithm
 from starlette.websockets import WebSocketDisconnect
 
+from app.access import AccessService
 from app.api import Services
 from app.auth import SESSION_COOKIE, AuthService
 from app.config import Settings
@@ -36,6 +37,7 @@ from app.slots import (
 )
 from app.state import StateStore
 from app.supervisor import Supervisor
+from app.whatsapp import SendResult
 from tests.test_supervisor import FakeDriver
 
 ORIGIN = "https://leveling.test"
@@ -123,15 +125,42 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @dataclass
+class FakeMessenger:
+    """WhatsApp na borda: guarda o que seria enviado."""
+
+    sent: list[tuple[str, str]] = field(default_factory=list)
+    result: SendResult = SendResult.SENT
+
+    async def send(self, phone: str, text: str) -> SendResult:
+        self.sent.append((phone, text))
+        return self.result
+
+
+@dataclass
+class FakeClock:
+    now: float = field(default_factory=time.time)
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@dataclass
 class World:
     app: FastAPI
     slots: SlotManager
     registry: SlotRegistry
     drivers: dict[int, FakeDriver]
+    access: AccessService
+    messenger: FakeMessenger
+    clock: FakeClock
 
 
 @pytest.fixture
 def world(settings: Settings, google: FakeGoogle) -> World:
+    return build_world(settings, google)
+
+
+def build_world(settings: Settings, google: FakeGoogle) -> World:
     registry = SlotRegistry(settings.data_dir, settings.max_slots)
     accounts = AccountStore(registry)
     drivers: dict[int, FakeDriver] = {}
@@ -149,8 +178,11 @@ def world(settings: Settings, google: FakeGoogle) -> World:
     auth = AuthService(
         settings, OidcClient(settings, transport=httpx.MockTransport(google.handler))
     )
-    app = create_app(settings, Services(auth, slots))
-    return World(app, slots, registry, drivers)
+    messenger, clock = FakeMessenger(), FakeClock()
+    access = AccessService(settings, slots, messenger, clock=clock)
+    asyncio.run(access.load())
+    app = create_app(settings, Services(auth, slots, access))
+    return World(app, slots, registry, drivers, access, messenger, clock)
 
 
 @pytest.fixture

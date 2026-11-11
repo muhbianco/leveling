@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import time
 from collections import OrderedDict
@@ -33,6 +34,9 @@ SESSION_TTL_S = 30 * 86_400
 FLOW_TTL_S = 600
 MAX_SESSIONS = 10
 MAX_FLOWS = 32
+# Para onde o login volta além de "/": só o link de pedido de acesso (allowlist, sem redirect
+# aberto). O link chega pelo WhatsApp e o dono pode estar sem sessão no aparelho.
+RETURN_PATH = re.compile(r"^/acesso/[A-Za-z0-9_-]{20,64}$")
 
 
 def _sha(value: str) -> str:
@@ -57,6 +61,7 @@ class _Flow:
     nonce: str
     verifier: str
     expires_at: float
+    return_to: str = "/"
 
 
 class LoginError(Exception):
@@ -88,8 +93,9 @@ class AuthService:
 
     # --- fluxo OIDC ---------------------------------------------------------------------------
 
-    def start_login(self) -> tuple[str, str]:
-        """Devolve (URL do Google, valor do cookie que amarra o fluxo a este navegador)."""
+    def start_login(self, return_to: str | None = None) -> tuple[str, str]:
+        """Devolve (URL do Google, valor do cookie que amarra o fluxo a este navegador). Um
+        `return_to` fora da allowlist vira "/"."""
         if not self._settings.google_client_id:
             raise LoginError("google_nao_configurado", status.HTTP_503_SERVICE_UNAVAILABLE)
         state, nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
@@ -99,7 +105,10 @@ class AuthService:
             del self._flows[key]
         while len(self._flows) >= MAX_FLOWS:
             self._flows.popitem(last=False)
-        self._flows[_sha(state)] = _Flow(_sha(binding), nonce, verifier, now + FLOW_TTL_S)
+        target = return_to if return_to and RETURN_PATH.fullmatch(return_to) else "/"
+        self._flows[_sha(state)] = _Flow(
+            _sha(binding), nonce, verifier, now + FLOW_TTL_S, return_to=target
+        )
         url = self._oidc.authorize_url(
             state=state, nonce=nonce, code_challenge=_challenge(verifier)
         )
@@ -107,8 +116,9 @@ class AuthService:
 
     async def finish_login(
         self, *, state: str | None, code: str | None, error: str | None, binding: str | None
-    ) -> tuple[str, Session]:
-        """Devolve (token do cookie, sessão). Levanta LoginError com o código para a tela."""
+    ) -> tuple[str, Session, str]:
+        """Devolve (token do cookie, sessão, caminho de volta). Levanta LoginError com o código
+        para a tela."""
         if not state or len(state) > 128:
             raise LoginError("estado_invalido")
         # O state é gasto antes de qualquer chamada de rede: replay nunca chega ao Google.
@@ -155,7 +165,7 @@ class AuthService:
             self._sessions[_sha(token)] = sess
             await self._save()
         logger.info("panel login ok")
-        return token, sess
+        return token, sess, flow.return_to
 
     # --- sessão --------------------------------------------------------------------------------
 

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Pedido de acesso · Leveling Keeper</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/acesso.js" defer></script>
+</head>
+<body class="login">
+  <main class="card access-card">
+    <h1>Leveling Keeper</h1>
+    <p class="muted small" id="who"></p>
+
+    <div id="loading"><p class="muted">Carregando o pedido…</p></div>
+
+    <div id="ask" hidden>
+      <h2>Pedido de acesso à sua tela remota</h2>
+      <p><strong id="requester"></strong> pediu acesso à tela remota da sua instância<span id="hunter"></span>.</p>
+      <p class="muted small" id="times"></p>
+      <p class="hint">Com acesso, a pessoa vê e mexe no jogo da sua instância até o prazo vencer
+        ou você revogar no painel. Sem troca de itens ou gold entre as contas: é a condição
+        combinada com o dev do jogo.</p>
+      <div class="actions center">
+        <button type="button" class="button primary" data-hours="1">Liberar por 1 hora</button>
+        <button type="button" class="button" data-hours="12">Liberar por 12 horas</button>
+        <button type="button" class="button" data-hours="168">Liberar por 7 dias</button>
+        <button type="button" class="button danger" id="deny">Recusar</button>
+      </div>
+    </div>
+
+    <div id="done" hidden>
+      <p id="done-text"></p>
+    </div>
+
+    <div id="refused" hidden>
+      <p class="error" id="refused-text"></p>
+      <div class="actions center">
+        <button type="button" class="button" id="switch" hidden>Sair e entrar com outra conta</button>
+      </div>
+    </div>
+
+    <p class="error" id="error" hidden></p>
+    <p><a class="link" href="/">Ir para o painel</a></p>
+  </main>
+</body>
+</html>

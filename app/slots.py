@@ -229,8 +229,9 @@ def resolve_active(book: AccountBook, server_user: str | None) -> ActiveAccount 
 
 
 def server_username(settings: Settings, record: SlotRecord, secrets: Secrets) -> str | None:
-    """A conta do arquivo de segredos vale só para o dono."""
-    if record.email in settings.admin_email_set and secrets.has_game_credentials:
+    """A conta do arquivo de segredos vale só para o dono (o primeiro de ADMIN_EMAILS): os outros
+    admins veem as instâncias alheias, mas não usam a conta do dono."""
+    if record.email == settings.owner_email and secrets.has_game_credentials:
         return secrets.game_username
     return None
 
@@ -447,8 +448,7 @@ class SlotManager:
         return len(self._runtimes)
 
     async def start(self) -> None:
-        owner = self._settings.admin_email_list[0] if self._settings.admin_email_list else None
-        await asyncio.to_thread(self._registry.load, owner)
+        await asyncio.to_thread(self._registry.load, self._settings.owner_email)
         for record in self._registry.records():
             await asyncio.to_thread(self._accounts.migrate_legacy, record.id)
             if record.email not in self._settings.allowed_email_set:
@@ -460,6 +460,13 @@ class SlotManager:
     def for_email(self, email: str) -> SlotRuntime | None:
         record = self._registry.by_email(email)
         return None if record is None else self._runtimes.get(record.id)
+
+    def for_id(self, slot_id: int) -> SlotRuntime | None:
+        """Instância rodando no slot. Quem chama confere o dono (record.email) antes de usar."""
+        return self._runtimes.get(slot_id)
+
+    def running(self) -> list[SlotRuntime]:
+        return [self._runtimes[k] for k in sorted(self._runtimes)]
 
     def capacity_left(self) -> int:
         return self._settings.max_slots - len(self._registry.records())

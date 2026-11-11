@@ -4,25 +4,32 @@
 #
 #   install-secrets.sh                    pergunta cada valor sem eco (Enter mantém o atual)
 #   install-secrets.sh --ensure-data-key  não pergunta nada: só gera a DATA_KEY se faltar
+#   install-secrets.sh --wuzapi           não pergunta nada: copia URL e token da SESSÃO da WuzAPI
+#                                         do MegaPromoOz (o token de admin não sai de lá)
 #
 #   GAME_USERNAME         caçador do dono (vazio = o dono cadastra pelo painel, como os jogadores)
 #   GAME_PASSWORD         senha do jogo do dono
 #   GOOGLE_CLIENT_SECRET  segredo do cliente OAuth "Leveling Keeper" (Google Cloud)
 #   DATA_KEY              chave Fernet das senhas cadastradas pelo painel. Gerada aqui, uma vez;
 #                         NUNCA trocar: as senhas já guardadas deixam de abrir (o painel pede de novo)
+#   WUZAPI_BASE_URL       WuzAPI interna (rede chatbot-net), para o pedido de acesso no WhatsApp
+#   WUZAPI_SESSION_TOKEN  token da sessão do MegaPromoOz (a mesma que o sesi-vagas usa)
 set -euo pipefail
 
 DIR=/root/leveling-secrets
 OUT=$DIR/secrets.env
 APP_UID=1001  # usuário do container (Dockerfile)
+WUZAPI=${WUZAPI_ENV:-/root/.megapromooz-wuzapi.env}
 ASKED=(GAME_USERNAME GAME_PASSWORD GOOGLE_CLIENT_SECRET)
-KEYS=("${ASKED[@]}" DATA_KEY)
+COPIED=(WUZAPI_BASE_URL WUZAPI_SESSION_TOKEN)
+KEYS=("${ASKED[@]}" DATA_KEY "${COPIED[@]}")
 
 MODE=ask
 case "${1:-}" in
   "") ;;
   --ensure-data-key) MODE=ensure ;;
-  *) echo "uso: $0 [--ensure-data-key]" >&2; exit 2 ;;
+  --wuzapi) MODE=wuzapi ;;
+  *) echo "uso: $0 [--ensure-data-key | --wuzapi]" >&2; exit 2 ;;
 esac
 
 current() {  # chave -> valor atual do arquivo, sem ecoar
@@ -47,6 +54,17 @@ if [ "$MODE" = ask ]; then
       echo "ABORT: $key com quebra de linha"; exit 1
     fi
     [ -n "$value" ] && values[$key]=$value
+  done
+fi
+
+if [ "$MODE" = wuzapi ]; then
+  [ -r "$WUZAPI" ] || { echo "ABORT: $WUZAPI não existe"; exit 1; }
+  for key in "${COPIED[@]}"; do
+    line=$(grep -E "^$key=" "$WUZAPI" | tail -n1 || true)
+    line=${line#*=}
+    line=${line%\"}; line=${line#\"}; line=${line%\'}; line=${line#\'}
+    [ -n "$line" ] || { echo "ABORT: $key vazio em $WUZAPI"; exit 1; }
+    values[$key]=$line
   done
 fi
 

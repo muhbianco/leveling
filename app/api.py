@@ -7,7 +7,7 @@ import html
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
@@ -16,6 +16,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from playwright.async_api import Error as PlaywrightError
 from pydantic import BaseModel, Field, field_validator
 
+from app.access import ID_PATTERN, TOKEN_PATTERN, AccessError, AccessService
+from app.access import iso as iso_z
 from app.auth import (
     FLOW_COOKIE,
     FLOW_TTL_S,
@@ -35,6 +37,7 @@ STATIC_FILES = {
     "styles.css": "text/css",
     "remota.js": "text/javascript",
     "remota.css": "text/css",
+    "acesso.js": "text/javascript",
 }
 SCREENSHOT_MIN_INTERVAL_S = 2.0
 # Tela remota: o visor próprio (/remota, sobre o núcleo do noVNC) é o padrão; a UI do noVNC fica
@@ -56,6 +59,18 @@ SLOT_ERROR_STATUS = {
     "sem_chave": status.HTTP_503_SERVICE_UNAVAILABLE,
     "conta_nao_encontrada": status.HTTP_404_NOT_FOUND,
 }
+# Idem para o acesso à tela remota de outra instância (AccessError.code).
+ACCESS_ERROR_STATUS = {
+    "nao_admin": status.HTTP_403_FORBIDDEN,
+    "outra_conta": status.HTTP_403_FORBIDDEN,
+    "acesso_negado": status.HTTP_403_FORBIDDEN,
+    "slot_nao_encontrado": status.HTTP_404_NOT_FOUND,
+    "pedido_nao_encontrado": status.HTTP_404_NOT_FOUND,
+    "acesso_nao_encontrado": status.HTTP_404_NOT_FOUND,
+    "prazo_invalido": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "pedidos_demais": status.HTTP_429_TOO_MANY_REQUESTS,
+    "acessos_demais": status.HTTP_429_TOO_MANY_REQUESTS,
+}
 
 LOGIN_ERRORS = {
     "conta_nao_autorizada": "Esta conta Google não tem acesso a este painel.",
@@ -72,10 +87,19 @@ LOGIN_ERRORS = {
 class Services:
     auth: AuthService
     slots: SlotManager
+    access: AccessService
 
 
 class PowerIn(BaseModel):
     on: bool
+
+
+class AccessRequestIn(BaseModel):
+    slot: int = Field(ge=1, le=8)
+
+
+class ApproveIn(BaseModel):
+    hours: Literal[1, 12, 168]
 
 
 class AccountIn(BaseModel):
@@ -106,6 +130,9 @@ def services(request: Request) -> Services:
 
 Svc = Annotated[Services, Depends(services)]
 AccountId = Annotated[str, PathParam(pattern=ACCOUNT_ID_PATTERN)]
+AccessId = Annotated[str, PathParam(pattern=ID_PATTERN)]
+LinkToken = Annotated[str, PathParam(pattern=TOKEN_PATTERN)]
+SlotQuery = Annotated[int | None, Query(ge=1, le=8)]
 
 
 def read_session(request: Request, svc: Svc) -> Session:
@@ -122,6 +149,12 @@ WriteSession = Annotated[Session, Depends(write_session)]
 
 def _refused(exc: SlotError) -> HTTPException:
     return HTTPException(SLOT_ERROR_STATUS.get(exc.code, status.HTTP_409_CONFLICT), detail=exc.code)
+
+
+def _access_refused(exc: AccessError) -> HTTPException:
+    return HTTPException(
+        ACCESS_ERROR_STATUS.get(exc.code, status.HTTP_409_CONFLICT), detail=exc.code
+    )
 
 
 def _runtime(svc: Services, sess: Session) -> SlotRuntime:
@@ -169,9 +202,11 @@ def build_router(settings: Settings) -> APIRouter:
     # --- login Google ---------------------------------------------------------------------------
 
     @router.get("/auth/login")
-    async def login(svc: Svc) -> Response:
+    async def login(
+        svc: Svc, next_path: Annotated[str | None, Query(alias="next", max_length=128)] = None
+    ) -> Response:
         try:
-            url, binding = svc.auth.start_login()
+            url, binding = svc.auth.start_login(next_path)
         except LoginError as exc:
             return _error_page(exc)
         response = RedirectResponse(url, status_code=status.HTTP_303_SEE_OTHER)
@@ -189,14 +224,14 @@ def build_router(settings: Settings) -> APIRouter:
         error: Annotated[str | None, Query(max_length=256)] = None,
     ) -> Response:
         try:
-            token, _sess = await svc.auth.finish_login(
+            token, _sess, return_to = await svc.auth.finish_login(
                 state=state, code=code, error=error, binding=request.cookies.get(FLOW_COOKIE)
             )
         except LoginError as exc:
             refused = _error_page(exc)
             refused.delete_cookie(FLOW_COOKIE, path="/auth", **cookie_kwargs())
             return refused
-        response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
+        response = RedirectResponse(return_to, status_code=status.HTTP_303_SEE_OTHER)
         response.delete_cookie(FLOW_COOKIE, path="/auth", **cookie_kwargs())
         response.set_cookie(
             SESSION_COOKIE, token, max_age=SESSION_TTL_S, path="/", **cookie_kwargs()
@@ -248,6 +283,7 @@ def build_router(settings: Settings) -> APIRouter:
     async def delete_slot(svc: Svc, sess: WriteSession) -> JSONResponse:
         if not await svc.slots.delete(sess.email):
             raise HTTPException(status.HTTP_409_CONFLICT, detail="sem_instancia")
+        await svc.access.forget_owner(sess.email)
         return await _status_response(svc, sess)
 
     @router.post("/api/power")
@@ -304,13 +340,115 @@ def build_router(settings: Settings) -> APIRouter:
             raise HTTPException(status.HTTP_409_CONFLICT, detail="navegador fechado")
         return Response(image, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
+    # --- acesso à instância de outro jogador ----------------------------------------------------
+
+    @router.post("/api/access/requests")
+    async def request_access(body: AccessRequestIn, svc: Svc, sess: WriteSession) -> JSONResponse:
+        """Admin pede a tela remota de outra instância: o link vai ao WhatsApp do dono dela."""
+        try:
+            await svc.access.request(sess.email, body.slot)
+        except AccessError as exc:
+            raise _access_refused(exc) from exc
+        return await _status_response(svc, sess)
+
+    @router.delete("/api/access/requests/{request_id}")
+    async def cancel_request(request_id: AccessId, svc: Svc, sess: WriteSession) -> JSONResponse:
+        try:
+            await svc.access.cancel(sess.email, request_id)
+        except AccessError as exc:
+            raise _access_refused(exc) from exc
+        return await _status_response(svc, sess)
+
+    @router.post("/api/access/requests/{request_id}/approve")
+    async def approve_request(
+        request_id: AccessId, body: ApproveIn, svc: Svc, sess: WriteSession
+    ) -> JSONResponse:
+        """Só o dono da instância (pela sessão Google dele) libera."""
+        try:
+            await svc.access.approve(sess.email, request_id, body.hours)
+        except AccessError as exc:
+            raise _access_refused(exc) from exc
+        return await _status_response(svc, sess)
+
+    @router.post("/api/access/requests/{request_id}/deny")
+    async def deny_request(request_id: AccessId, svc: Svc, sess: WriteSession) -> JSONResponse:
+        try:
+            await svc.access.deny(sess.email, request_id)
+        except AccessError as exc:
+            raise _access_refused(exc) from exc
+        return await _status_response(svc, sess)
+
+    @router.delete("/api/access/grants/{grant_id}")
+    async def revoke_grant(grant_id: AccessId, svc: Svc, sess: WriteSession) -> JSONResponse:
+        """O dono revoga, ou quem recebeu abre mão. A tela remota aberta cai na hora."""
+        try:
+            await svc.access.revoke(sess.email, grant_id)
+        except AccessError as exc:
+            raise _access_refused(exc) from exc
+        return await _status_response(svc, sess)
+
+    @router.get("/api/access/link/{token}")
+    async def access_link(token: LinkToken, svc: Svc, sess: ReadSession) -> JSONResponse:
+        """O pedido por trás do link do WhatsApp, para a página /acesso. Só para o dono."""
+        headers = {"Cache-Control": "no-store"}
+        try:
+            req = svc.access.resolve_link(sess.email, token)
+        except AccessError as exc:
+            return JSONResponse(
+                {"detail": exc.code, "email": sess.email, "csrf": sess.csrf},
+                status_code=ACCESS_ERROR_STATUS.get(exc.code, status.HTTP_409_CONFLICT),
+                headers=headers,
+            )
+        own = svc.slots.for_id(req.slot_id)
+        hunter = None if own is None else own.supervisor.status().game_username or None
+        payload = {
+            "email": sess.email,
+            "csrf": sess.csrf,
+            "request": {
+                "id": req.id,
+                "requester": svc.access.label(req.requester),
+                "hunter": hunter,
+                "created_at": iso_z(req.created_at),
+                "expires_at": iso_z(req.expires_at),
+            },
+        }
+        return JSONResponse(payload, headers=headers)
+
+    @router.get("/acesso/{token}", response_class=HTMLResponse)
+    async def access_page(token: LinkToken, request: Request, svc: Svc) -> Response:
+        """Link do WhatsApp. Sem sessão, passa pelo Google e volta aqui."""
+        if svc.auth.session_for(request.cookies.get(SESSION_COOKIE)) is None:
+            query = urlencode({"next": f"/acesso/{token}"})
+            return RedirectResponse(f"/auth/login?{query}", status_code=status.HTTP_303_SEE_OTHER)
+        return FileResponse(WEB_DIR / "acesso.html", media_type="text/html", headers=PAGE_HEADERS)
+
     # --- tela remota (noVNC) ----------------------------------------------------------------------
 
     @router.get("/remota", response_class=HTMLResponse)
-    async def remote_screen(svc: Svc, sess: ReadSession) -> Response:
-        if svc.slots.for_email(sess.email) is None:
+    async def remote_screen(svc: Svc, sess: ReadSession, slot: SlotQuery = None) -> Response:
+        """Sem `slot`: a própria instância. Com `slot` de outro jogador: só com acesso liberado."""
+        try:
+            svc.access.authorize_view(sess.email, slot)
+        except AccessError:
             return RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
         return FileResponse(WEB_DIR / "remota.html", media_type="text/html", headers=PAGE_HEADERS)
+
+    @router.get("/api/remote")
+    async def remote_info(svc: Svc, sess: ReadSession, slot: SlotQuery = None) -> JSONResponse:
+        """De quem é a tela e até quando vale; a tela remota consulta ao abrir e quando cai."""
+        try:
+            runtime, grant = svc.access.authorize_view(sess.email, slot)
+        except AccessError as exc:
+            raise _access_refused(exc) from exc
+        record = runtime.record
+        payload = {
+            "slot_id": record.id,
+            "own": grant is None,
+            "name": runtime.supervisor.status().game_username or None,
+            "email": record.email,
+            "expires_at": None if grant is None else iso_z(grant.expires_at),
+        }
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
     @router.get("/vnc/")
     async def vnc_home(svc: Svc, sess: ReadSession) -> Response:
@@ -335,7 +473,7 @@ def build_router(settings: Settings) -> APIRouter:
     @router.websocket("/vnc/ws")
     async def vnc_ws(ws: WebSocket) -> None:
         svc: Services = ws.app.state.services
-        await bridge(ws, settings, svc.auth, svc.slots)
+        await bridge(ws, settings, svc.auth, svc.access)
 
     return router
 
@@ -360,6 +498,7 @@ async def _status_response(svc: Services, sess: Session) -> JSONResponse:
             "max_accounts": MAX_ACCOUNTS,
         }
         payload["vnc_url"] = REMOTE_URL
+    payload["access"] = svc.access.view(sess.email)
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 

@@ -26,6 +26,45 @@ para os e-mails Google de `ADMIN_EMAILS` (dono) e `PLAYER_EMAILS` (jogadores lib
 - **Desliga sozinho** quando a conta entra em outro aparelho (`session.replaced`). Basta abrir o
   jogo no PC; lembrar de ligar quando sair.
 
+## Acesso à tela remota de outro jogador (`app/access.py`)
+
+Os admins (`ADMIN_EMAILS`) veem, no painel, o card "Instâncias dos outros jogadores" e podem
+pedir acesso à tela remota da instância de outro jogador. Quem está só em `PLAYER_EMAILS` vê só a
+própria instância.
+
+1. **Pedido.** O admin clica em "Pedir acesso". O keeper manda ao WhatsApp do dono da instância
+   (`PLAYER_PHONES`) um link `https://leveling.muhbianco.com.br/acesso/<token>`, que vale 1 h.
+   - O envio é pela WuzAPI, na sessão do MegaPromoOz (a mesma do sesi-vagas).
+   - O pedido aparece também no card "Acesso à sua instância" do painel do dono. Isso vale com o
+     WhatsApp fora do ar e com o dono sem telefone cadastrado.
+2. **Liberação.** O dono abre o link. Sem sessão, ele passa pelo Google e volta para o link.
+   - Ele escolhe 1 h, 12 h ou 7 dias, ou recusa.
+   - Quem libera é a **sessão Google do dono**; o token só localiza o pedido. Um link encaminhado
+     para outra conta mostra "outra conta" e não libera nada.
+   - No disco fica só o hash do token.
+3. **Uso.** Quem pediu recebe um WhatsApp com `/remota?slot=N` e abre com a sessão Google dele.
+   - É a mesma tela remota do dono: vê e mexe no jogo.
+   - Enquanto ela está aberta, o robô daquela instância só observa.
+4. **Fim.** O acesso cai quando:
+   - o prazo vence;
+   - o dono revoga ou quem recebeu abre mão (ambos no painel);
+   - o dono apaga a instância;
+   - qualquer um dos dois sai da lista de e-mails.
+
+   A tela remota aberta cai na hora (WebSocket fechado com 1008), e a página para de reconectar.
+
+Regras:
+
+- **Um pedido por par de cada vez.** Um pedido recusado segura o próximo até expirar, para o
+  WhatsApp do dono não virar alvo de insistência. Quando o WhatsApp falha, dá para pedir de novo.
+- **Eventos do dono:** pedido, liberação, recusa, revogação e cada abrir/fechar da tela por outro
+  jogador.
+- **Só a tela remota.** Ligar ou desligar, contas e apagar a instância continuam só com o dono.
+- **A conta do jogo do arquivo de segredos é só do dono** (o primeiro de `ADMIN_EMAILS`), mesmo
+  com todos os jogadores admin.
+- **Sem troca de itens ou gold entre as contas.** É a condição combinada com o dev do jogo
+  (ver "Slots e IPs"). Usar o acesso para isso transforma pessoas diferentes em multi-conta.
+
 ## Como o jogo funciona (lido do cliente em 02/11/2026)
 
 - **Conexão:** Phaser 3 + WebSocket binário em `wss://game.levelingidle2d.com.br:8443/ws`. A caçada
@@ -116,6 +155,7 @@ Estado em `/data` (arquivos com permissão 600):
 
 - `slots.json`: quem ocupa cada vaga.
 - `sessions.json`: hash das sessões do painel.
+- `access.json`: pedidos de acesso (hash do token do link) e acessos liberados, com prazo.
 - `slots/<n>/`: `state.json` (chave, motivo e últimos 200 eventos), `profile/` (perfil do Chromium)
   e `accounts.json` (contas do jogo com senha cifrada, mais qual está ativa). O `credentials.json`
   de antes (um caçador por vaga) vira a conta ativa no `accounts.json` no primeiro boot.
@@ -147,9 +187,13 @@ wsl -e docker build -t leveling-keeper:local .
   `infra/deploy.sh`).
 - **Volume:** `leveling_data` fica **fora do backup B2** de propósito. É só perfil, chave, eventos e
   credenciais cifradas; um login novo recupera tudo.
-- **Env da stack:** `LEVELING_TAG`, `GOOGLE_CLIENT_ID`, `ADMIN_EMAILS` e `PLAYER_EMAILS`. Mudar
-  jogadores: `portainer-stack-update.py --stack leveling --yaml ... --set-env PLAYER_EMAILS=...`
-  (reinicia o container; as instâncias ligadas voltam sozinhas).
+- **Env da stack:** `LEVELING_TAG`, `GOOGLE_CLIENT_ID`, `ADMIN_EMAILS` (o dono primeiro),
+  `PLAYER_EMAILS` e `PLAYER_PHONES` (`email=telefone`, vírgula). Mudar jogadores ou telefones:
+  `portainer-stack-update.py --stack leveling --yaml ... --set-env PLAYER_EMAILS=...` (reinicia o
+  container; as instâncias ligadas voltam sozinhas).
+- **WhatsApp do pedido de acesso:** `install-secrets.sh --wuzapi` copia `WUZAPI_BASE_URL` e
+  `WUZAPI_SESSION_TOKEN` de `/root/.megapromooz-wuzapi.env` para o arquivo de segredos (sem
+  pedir nada; o token de admin não é copiado). O app relê o arquivo a cada envio.
 
 ### Primeira vez
 
@@ -183,7 +227,9 @@ wsl -e docker build -t leveling-keeper:local .
 | Trocar a senha do dono (arquivo) ou o segredo Google | rodar `install-secrets.sh` de novo; o app relê sozinho |
 | Garantir a `DATA_KEY` sem perguntar nada | `install-secrets.sh --ensure-data-key` (nunca troca uma existente) |
 | Liberar a vaga de alguém | o próprio jogador em "Apagar minha instância"; tirar o e-mail de `PLAYER_EMAILS` só para de rodar a instância |
-| Rollback | `infra/deploy.sh <sha12 anterior>` (com `PORTAINER_STACK_UPDATE` apontando para o script) |
+| Liberar ou tirar o painel compartilhado de alguém | mover o e-mail entre `ADMIN_EMAILS` e `PLAYER_EMAILS` (o dono fica sempre primeiro em `ADMIN_EMAILS`) |
+| Pedido de acesso sem WhatsApp | conferir `PLAYER_PHONES` do dono da instância e os `WUZAPI_*` do arquivo; o evento do dono diz qual foi ("sem WhatsApp cadastrado", "o WhatsApp falhou"…) |
+| Rollback | `infra/deploy.sh <sha12 anterior>` (com `PORTAINER_STACK_UPDATE` apontando para o script). Para antes do acesso compartilhado: **primeiro** deixar só o dono em `ADMIN_EMAILS` (a imagem antiga dá a conta do arquivo de segredos a todo admin), depois trocar a imagem |
 | Desligar tudo | `docker service scale leveling_keeper=0` (religar com `=1`) |
 | Medir consumo | `docker stats $(docker ps -q -f name=leveling_keeper)`. ~1 núcleo e ~750 MB por instância jogando; limite 2 CPU / 3 GB |
 | Logs | `docker service logs leveling_keeper`. Nunca contêm senha; o login loga só o tipo do erro |

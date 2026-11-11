@@ -76,3 +76,11 @@ body {
 .link { color: var(--accent); }
 
 body.holding #screen { outline: 2px solid var(--warn); outline-offset: -2px; }
+
+/* Tela de outro jogador (acesso liberado pelo dono) */
+.whose {
+  margin-right: auto; color: var(--warn); font-size: 0.8rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.whose[hidden] { display: none; }
+.state:has(+ .whose:not([hidden])) { margin-right: 0; }

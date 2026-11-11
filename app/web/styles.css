@@ -176,3 +176,13 @@ summary { cursor: pointer; color: var(--accent); }
 
 .button.danger { color: var(--bad); border-color: var(--bad); }
 #panel { display: grid; gap: 16px; }
+
+/* Acesso à instância de outro jogador */
+.accounts li.pending { border-color: var(--warn); }
+.accounts .hint.wide { flex-basis: 100%; margin: 0; }
+.accounts .row-actions { flex-wrap: wrap; justify-content: flex-end; }
+#incoming:empty, #granted:empty { display: none; }
+#granted { margin-top: 8px; }
+body.login .card.access-card { max-width: 440px; }
+.access-card .actions.center { justify-content: center; }
+.access-card .actions .button { flex: 1 1 auto; }

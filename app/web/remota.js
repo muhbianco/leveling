@@ -7,6 +7,10 @@
 //
 // Transporte: o servidor (X0tigervnc) manda quadros sem esperar pedido (ContinuousUpdates), então
 // a taxa não depende da ida e volta até a hel1; a latência de cada ação é ~metade do ping.
+//
+// `?slot=N` abre a instância de outro jogador (só com acesso liberado pelo dono). Antes de conectar
+// e a cada queda a página pergunta ao servidor (/api/remote) se ainda pode: acesso revogado ou
+// vencido para de reconectar e avisa.
 
 import RFB from "/vnc/core/rfb.js";
 import KeyTable from "/vnc/core/input/keysym.js";
@@ -22,7 +26,15 @@ const RECONNECT_MAX_MS = 30_000;
 const REPEAT_FIRST_MS = 400;
 const REPEAT_MS = 180;
 
-const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/vnc/ws`;
+const slotParam = /^\d{1,2}$/.test(new URLSearchParams(location.search).get("slot") || "")
+  ? new URLSearchParams(location.search).get("slot")
+  : null;
+const slotQuery = slotParam ? `?slot=${slotParam}` : "";
+const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/vnc/ws${slotQuery}`;
+const timeFmt = new Intl.DateTimeFormat("pt-BR", {
+  timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+});
+let whoseLabel = "";
 let rfb = null;
 let wantConnected = true;
 let reconnectDelay = RECONNECT_START_MS;
@@ -36,7 +48,64 @@ function setState(text, tone) {
   const el = $("state");
   el.textContent = text;
   el.dataset.tone = tone;
-  document.title = `${text} · Tela remota`;
+  document.title = whoseLabel ? `${text} · ${whoseLabel}` : `${text} · Tela remota`;
+}
+
+// --- acesso -------------------------------------------------------------------------------------
+
+function showWhose(info) {
+  const el = $("whose");
+  if (info.own) {
+    whoseLabel = "";
+    el.hidden = true;
+    return;
+  }
+  const name = info.name || info.email;
+  const until = info.expires_at ? ` · até ${timeFmt.format(new Date(info.expires_at))}` : "";
+  whoseLabel = `Instância de ${name}`;
+  el.textContent = `${whoseLabel}${until}`;
+  el.title = `${info.email}${until}`;
+  el.hidden = false;
+}
+
+function stopFor(message) {
+  wantConnected = false;
+  clearTimeout(reconnectTimer);
+  clearInterval(countdownTimer);
+  reconnectTimer = null;
+  setState("sem acesso", "bad");
+  showOverlay(message);
+}
+
+// true: pode (re)conectar. false: acabou, com o aviso na tela. Erro de rede ou 5xx deixa tentar:
+// quem decide de verdade é a ponte, que recusa sem acesso.
+async function checkAccess() {
+  let res;
+  try {
+    res = await fetch(`/api/remote${slotQuery}`, { credentials: "same-origin", cache: "no-store" });
+  } catch (err) {
+    return true;
+  }
+  if (res.status === 401) {
+    stopFor("A sessão do painel acabou. Entre de novo pelo painel.");
+    return false;
+  }
+  if (res.status === 403) {
+    stopFor("O acesso a esta tela acabou: o dono revogou ou o prazo venceu. Peça de novo pelo painel.");
+    return false;
+  }
+  if (res.status === 409) {
+    stopFor("Esta instância não existe mais.");
+    return false;
+  }
+  if (res.ok) {
+    try {
+      showWhose(await res.json());
+    } catch (err) {
+      // corpo sem JSON: segue sem o rótulo
+    }
+  }
+  return true;
 }
 
 function showOverlay(text) {
@@ -99,7 +168,9 @@ function onDisconnect(e) {
   }
   const why = e.detail.clean ? "A conexão fechou." : "A conexão caiu.";
   setState("reconectando…", "warn");
-  scheduleReconnect(why);
+  checkAccess().then((ok) => {
+    if (ok && wantConnected) scheduleReconnect(why);
+  });
 }
 
 function scheduleReconnect(why) {
@@ -253,10 +324,10 @@ document.addEventListener("DOMContentLoaded", () => {
       // Um RFB desconectado não reconecta: cria outro.
       rfb = null;
     }
-    connect();
+    checkAccess().then((ok) => ok && connect());
   });
 
-  connect();
+  checkAccess().then((ok) => ok && connect());
 });
 
 window.addEventListener("beforeunload", () => {

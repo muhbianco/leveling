@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
+import re
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -16,7 +18,16 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 GOOGLE_ISSUER = "https://accounts.google.com"
-SECRET_KEYS = ("GAME_USERNAME", "GAME_PASSWORD", "GOOGLE_CLIENT_SECRET", "DATA_KEY")
+SECRET_KEYS = (
+    "GAME_USERNAME",
+    "GAME_PASSWORD",
+    "GOOGLE_CLIENT_SECRET",
+    "DATA_KEY",
+    "WUZAPI_BASE_URL",
+    "WUZAPI_SESSION_TOKEN",
+)
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -24,11 +35,18 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     public_url: str = "https://leveling.muhbianco.com.br"
-    # E-mails Google que entram no painel (vírgula). Vazio = ninguém entra. O primeiro dono herda
-    # a instância de antes dos slots e pode usar o usuário/senha do arquivo de segredos.
+    # E-mails Google que entram no painel (vírgula). Vazio = ninguém entra. Admin vê as instâncias
+    # dos outros e pede acesso à tela remota delas (app/access.py). O primeiro da lista é o dono:
+    # herda a instância de antes dos slots e é o único que usa o usuário/senha do arquivo de
+    # segredos.
     admin_emails: str = ""
-    # Outros jogadores liberados: cada um cadastra o próprio caçador pelo painel.
+    # Outros jogadores liberados: cada um cadastra o próprio caçador pelo painel e só vê a própria
+    # instância.
     player_emails: str = ""
+    # WhatsApp de cada jogador, para o pedido de acesso (`email=telefone`, vírgula). Fica no Env da
+    # stack, fora do git. Sem telefone, o pedido aparece só no painel do dono.
+    player_phones: str = ""
+    wuzapi_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
     # Instâncias ao mesmo tempo. O jogo derruba todas acima de 2 contas pelo mesmo IP: os slots
     # acima de `direct_slots` mandam o tráfego do servidor do jogo pelo proxy de saída
     # (app/egress.py), que sai pelo segundo IPv4 da hel1. Pessoas diferentes, uma conta cada,
@@ -80,6 +98,30 @@ class Settings(BaseSettings):
         return self.admin_email_set | frozenset(_emails(self.player_emails))
 
     @property
+    def owner_email(self) -> str | None:
+        """O dono: o primeiro de ADMIN_EMAILS. Os outros admins não usam a conta do arquivo."""
+        return self.admin_email_list[0] if self.admin_email_list else None
+
+    @cached_property
+    def phone_map(self) -> dict[str, str]:
+        """E-mail -> telefone (só dígitos, com o 55). Item que não parece telefone do Brasil fica
+        de fora com um aviso no log, sem derrubar o boot."""
+        phones: dict[str, str] = {}
+        for item in self.player_phones.split(","):
+            if not item.strip():
+                continue
+            email, sep, raw = item.partition("=")
+            phone = br_phone(raw)
+            if not sep or not email.strip() or phone is None:
+                logger.warning("PLAYER_PHONES: item ignorado (formato email=telefone)")
+                continue
+            phones[email.strip().lower()] = phone
+        return phones
+
+    def phone_for(self, email: str) -> str | None:
+        return self.phone_map.get(email)
+
+    @property
     def public_origin(self) -> str:
         parts = urlsplit(self.public_url)
         return f"{parts.scheme}://{parts.netloc}"
@@ -121,6 +163,16 @@ class Settings(BaseSettings):
         return f"data:application/x-ns-proxy-autoconfig;base64,{encoded}"
 
 
+def br_phone(raw: str) -> str | None:
+    """Telefone do Brasil em dígitos com o 55 (DDD + 8 ou 9 dígitos). None se não parecer um."""
+    digits = re.sub(r"\D+", "", raw)
+    if len(digits) in (10, 11):
+        digits = "55" + digits
+    if len(digits) not in (12, 13) or not digits.startswith("55"):
+        return None
+    return digits
+
+
 def _emails(raw: str) -> tuple[str, ...]:
     seen: dict[str, None] = {}
     for item in raw.split(","):
@@ -141,6 +193,9 @@ class Secrets:
     version: float = 0.0
     # De onde veio o usuário/senha do jogo (slots.SOURCE_*); vazio fora dos slots.
     source: str = ""
+    # WuzAPI (sessão do MegaPromoOz, a mesma do sesi-vagas): manda o pedido de acesso ao dono.
+    wuzapi_base_url: str = ""
+    wuzapi_session_token: str = field(default="", repr=False)
 
     @property
     def has_game_credentials(self) -> bool:
@@ -178,4 +233,6 @@ def read_secrets(path: Path) -> Secrets:
         google_client_secret=values["GOOGLE_CLIENT_SECRET"].strip(),
         data_key=values["DATA_KEY"].strip(),
         version=version,
+        wuzapi_base_url=values["WUZAPI_BASE_URL"].strip(),
+        wuzapi_session_token=values["WUZAPI_SESSION_TOKEN"].strip(),
     )

@@ -1,9 +1,10 @@
 """Ponte WebSocket <-> TCP entre o noVNC do painel e o X0tigervnc do slot (127.0.0.1:5900+N-1).
 
 Faz o papel do websockify, mas atrás da sessão Google do painel: sem sessão (ou com Origin de
-outro site) a conexão é recusada antes de abrir o TCP, e a porta vem do slot do e-mail da sessão,
-então cada jogador só vê a própria tela. Enquanto alguém está na tela remota o supervisor do slot
-entra em modo manual (não recarrega nem loga).
+outro site) a conexão é recusada antes de abrir o TCP. Sem `?slot=`, a porta vem do slot do e-mail
+da sessão; com o slot de outro jogador, só com acesso liberado pelo dono (app/access.py), e a
+conexão cai sozinha quando o acesso é revogado ou vence. Enquanto alguém está na tela remota o
+supervisor do slot entra em modo manual (não recarrega nem loga).
 """
 
 from __future__ import annotations
@@ -15,22 +16,40 @@ import logging
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from app.access import AccessError, AccessService
 from app.auth import AuthService
 from app.config import Settings
-from app.slots import SlotManager
 
 logger = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT_S = 5.0
+CLOSE_TIMEOUT_S = 3.0
 READ_CHUNK = 64 * 1024
 POLICY_VIOLATION = 1008
 TRY_AGAIN_LATER = 1013
+# De quanto em quanto a ponte de quem tem acesso confere o prazo (além do aviso de revogação).
+GRANT_RECHECK_S = 60.0
 
 
-async def bridge(ws: WebSocket, settings: Settings, auth: AuthService, slots: SlotManager) -> None:
+def _slot_param(ws: WebSocket) -> int | None:
+    raw = ws.query_params.get("slot")
+    if raw is None:
+        return None
+    if not raw.isdigit() or len(raw) > 2:
+        raise AccessError("acesso_negado")
+    return int(raw)
+
+
+async def bridge(
+    ws: WebSocket, settings: Settings, auth: AuthService, access: AccessService
+) -> None:
     sess = auth.websocket_session(ws)
-    runtime = None if sess is None else slots.for_email(sess.email)
-    if runtime is None:
+    if sess is None:
+        await ws.close(code=POLICY_VIOLATION)
+        return
+    try:
+        runtime, grant = access.authorize_view(sess.email, _slot_param(ws))
+    except AccessError:
         await ws.close(code=POLICY_VIOLATION)
         return
     supervisor = runtime.supervisor
@@ -49,7 +68,10 @@ async def bridge(ws: WebSocket, settings: Settings, auth: AuthService, slots: Sl
     subprotocol = "binary" if "binary" in ws.scope.get("subprotocols", []) else None
     await ws.accept(subprotocol=subprotocol)
     supervisor.viewer_joined()
-    logger.info("remote view opened")
+    revoked = None if grant is None else access.watch(grant.id)
+    if grant is not None:
+        await access.event(runtime, f"{access.label(sess.email)} abriu a tela remota")
+    logger.info("remote view opened (shared=%s)", grant is not None)
 
     async def ws_to_tcp() -> None:
         while True:
@@ -70,7 +92,22 @@ async def bridge(ws: WebSocket, settings: Settings, auth: AuthService, slots: Sl
                 return
             await ws.send_bytes(data)
 
+    async def guard() -> None:
+        """Termina quando o acesso de quem não é o dono acaba (revogado, vencido, slot trocado)."""
+        assert grant is not None and revoked is not None
+        while True:
+            left = access.grant_left(grant.id)
+            if left is None or left <= 0:
+                return
+            try:
+                await asyncio.wait_for(revoked.wait(), timeout=min(left, GRANT_RECHECK_S))
+            except TimeoutError:
+                continue
+            return
+
     tasks = [asyncio.create_task(ws_to_tcp()), asyncio.create_task(tcp_to_ws())]
+    if grant is not None:
+        tasks.append(asyncio.create_task(guard()))
     try:
         _done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
@@ -82,10 +119,18 @@ async def bridge(ws: WebSocket, settings: Settings, auth: AuthService, slots: Sl
                 await task
     finally:
         supervisor.viewer_left()
-        writer.close()
-        with contextlib.suppress(OSError):
-            await writer.wait_closed()
+        if grant is not None and revoked is not None:
+            access.unwatch(grant.id, revoked)
+        # O navegador fica sabendo primeiro; o TCP local fecha depois, com prazo (no Proactor do
+        # Windows o wait_closed depois de um read cancelado pode não voltar).
         if ws.application_state is WebSocketState.CONNECTED:
             with contextlib.suppress(RuntimeError, WebSocketDisconnect):
-                await ws.close()
+                # Acesso encerrado: 1008, para a tela remota não insistir em reconectar.
+                ended = grant is not None and access.grant_left(grant.id) is None
+                await ws.close(code=POLICY_VIOLATION if ended else 1000)
+        writer.close()
+        with contextlib.suppress(OSError, TimeoutError):
+            await asyncio.wait_for(writer.wait_closed(), CLOSE_TIMEOUT_S)
+        if grant is not None:
+            await access.event(runtime, f"{access.label(sess.email)} fechou a tela remota")
         logger.info("remote view closed")

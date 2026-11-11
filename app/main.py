@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from playwright.async_api import Playwright, async_playwright
 
+from app.access import AccessService
 from app.api import Services, build_router
 from app.auth import AuthService
 from app.config import Settings
@@ -32,6 +33,7 @@ from app.slots import (
 )
 from app.state import StateStore
 from app.supervisor import Supervisor
+from app.whatsapp import WuzapiMessenger
 
 logger = logging.getLogger("app")
 
@@ -91,11 +93,14 @@ def create_app(settings: Settings | None = None, prebuilt: Services | None = Non
         await slots.start()
         auth = AuthService(cfg, OidcClient(cfg))
         await auth.load()
-        app.state.services = Services(auth, slots)
+        access = AccessService(cfg, slots, WuzapiMessenger(cfg))
+        await access.load()
+        app.state.services = Services(auth, slots, access)
         logger.info("started with %s/%s slots", slots.used, cfg.max_slots)
         try:
             yield
         finally:
+            await access.stop()
             await slots.stop_all()
             await pw.stop()
             logger.info("stopped")

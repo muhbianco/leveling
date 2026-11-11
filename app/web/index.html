@@ -74,6 +74,16 @@
           apertado, tela cheia e qualidade rápida para conexão fraca.</p>
       </section>
 
+      <section class="card" id="my-access" hidden>
+        <h2>Acesso à sua instância</h2>
+        <ul class="accounts" id="incoming"></ul>
+        <ul class="accounts" id="granted"></ul>
+        <p class="error" id="my-access-error" hidden></p>
+        <p class="hint">Quem você libera abre a tela remota da sua instância (vê e mexe no jogo)
+          até o prazo vencer ou você revogar. Revogar derruba a tela aberta na hora. Enquanto
+          alguém está na tela remota, o robô só observa.</p>
+      </section>
+
       <details class="card events-box" id="events-box">
         <summary>
           <span class="events-title">Eventos</span>
@@ -110,6 +120,15 @@
           libera a vaga.</p>
       </section>
     </div>
+
+    <section class="card" id="shared" hidden>
+      <h2>Instâncias dos outros jogadores</h2>
+      <ul class="accounts" id="shared-list"></ul>
+      <p class="error" id="shared-error" hidden></p>
+      <p class="hint">"Pedir acesso" manda um link ao WhatsApp do dono da instância. Ele libera
+        entrando com a conta Google dele, e o pedido também aparece no painel dele. Sem troca de
+        itens ou gold entre as contas: é a condição combinada com o dev do jogo.</p>
+    </section>
   </main>
 
   <div class="modal" id="confirm-modal" role="alertdialog" aria-modal="true"
