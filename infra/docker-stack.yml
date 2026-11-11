@@ -78,14 +78,15 @@ services:
         condition: any
         delay: 10s
       resources:
-        # Por instância jogando (medido em 06/11/2026): o processo GPU do Chromium (WebGL em
-        # software, sem GPU) gasta 1,3 núcleo e o renderer 0,15; o servidor VNC + Xvfb somam até
-        # 0,2 com a tela remota aberta. Duas instâncias pedem ~3,0–3,3. Com o teto antigo de 2,0 o
-        # container ficava estrangulado 87 % do tempo (cliques atrasados, sonda do DOM estourando).
-        # Três instâncias (06/11/2026) pedem ~4,4 jogando juntas; 4,5 deixa 3,5 núcleos para as
-        # outras stacks da hel1 (8 núcleos, carga 1–4). Memória: ~0,75 GB por instância jogando.
+        # O WebGL em software (SwiftShader, sem GPU) não tem teto de quadros: o processo GPU do
+        # Chromium gasta o que o limite deixar. Medido em 11/11/2026 com o teto em 4,5: UMA instância
+        # sozinha levava os 4,5 núcleos (92 % dos períodos estrangulados), e a hel1 passou de carga
+        # ~3 para ~10 em 8 núcleos desde 06/11 (as outras stacks ficavam com 3,5). O 1,3 núcleo por
+        # instância medido em 06/11 foi lido com o container estrangulado: não é a demanda real.
+        # 2,5 devolve núcleos ao resto da hel1; o custo é a tela remota mais lenta com o teto cheio.
+        # Memória: ~0,75 GB por instância jogando.
         limits:
-          cpus: "4.5"
+          cpus: "2.5"
           memory: 4096M
         reservations:
           cpus: "0.25"
