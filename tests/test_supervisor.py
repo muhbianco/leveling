@@ -9,7 +9,6 @@ import pytest
 from app.config import Secrets, read_secrets
 from app.game import LoginFormError
 from app.policy import (
-    CONFIRM_WINDOW_SECONDS,
     MAX_ATTEMPTS_PER_HOUR,
     Action,
     BlockKind,
@@ -18,7 +17,12 @@ from app.policy import (
     Screen,
 )
 from app.state import OffReason, StateStore
-from app.supervisor import LOGIN_SPACING_S, MAX_LOGINS_BEFORE_LATCH, Supervisor
+from app.supervisor import (
+    LOGIN_SPACING_S,
+    MAX_LOGINS_BEFORE_LATCH,
+    TAKEOVER_MESSAGE,
+    Supervisor,
+)
 
 
 class FakeClock:
@@ -88,12 +92,35 @@ def store(tmp_path: Path) -> StateStore:
 
 @pytest.fixture
 def sup(
-    store: StateStore, driver: FakeDriver, secrets_file: Path, clock: FakeClock
+    store: StateStore,
+    driver: FakeDriver,
+    secrets_file: Path,
+    clock: FakeClock,
+    takeovers: Takeovers,
 ) -> Iterator[Supervisor]:
     async def credentials() -> Secrets:
         return read_secrets(secrets_file)
 
-    yield Supervisor(store, driver, credentials, clock=clock, rng=lambda: 0.5)
+    yield Supervisor(
+        store,
+        driver,
+        credentials,
+        clock=clock,
+        rng=lambda: 0.5,
+        on_takeover=takeovers.append_reason,
+    )
+
+
+class Takeovers(list[str]):
+    """Registra cada saída por "assumido" (o gancho que avisa o dono)."""
+
+    async def append_reason(self, reason: str) -> None:
+        self.append(reason)
+
+
+@pytest.fixture
+def takeovers() -> Takeovers:
+    return Takeovers()
 
 
 PLAYING = Observation(Screen.GAME, signal_age=1.0, screen_age=600.0)
@@ -222,14 +249,11 @@ async def test_reaching_game_resets_login_count(
     await sup.set_power(True)
     driver.obs = Observation(Screen.LOGIN)
     assert (await sup.tick()).action is Action.LOGIN  # primeiro login depois de ligar: livre
-    for _ in range(MAX_LOGINS_BEFORE_LATCH):
-        driver.obs = PLAYING
-        await sup.tick()
-        clock.now += LOGIN_SPACING_S
-        driver.obs = Observation(Screen.LOGIN)
-        assert (await sup.tick()).action is Action.HOLD  # já jogou: pergunta antes
-        clock.now += CONFIRM_WINDOW_SECONDS
-        assert (await sup.tick()).action is Action.LOGIN
+    clock.now += LOGIN_SPACING_S
+    assert (await sup.tick()).action is Action.LOGIN
+    driver.obs = PLAYING
+    await sup.tick()
+    assert sup._logins_since_game == 0
     assert sup.status().login_latched is False
 
 
@@ -240,87 +264,107 @@ EXPIRED = Observation(
     signal_age=2.0,
     screen_age=0.0,
 )
+REPLACED = Observation(
+    Screen.BLOCK,
+    block_kind=BlockKind.REPLACED,
+    block_text="Sua conta foi acessada em outro dispositivo.",
+)
 
 
-async def _play_then_expire(sup: Supervisor, driver: FakeDriver) -> None:
+async def _play(sup: Supervisor, driver: FakeDriver) -> None:
     await sup.set_power(True)
     await sup.tick()  # launch
     driver.obs = PLAYING
     await sup.tick()
-    driver.obs = EXPIRED
 
 
-async def test_expired_after_playing_waits_before_logging_in(
-    sup: Supervisor, driver: FakeDriver, clock: FakeClock, store: StateStore
+@pytest.mark.parametrize(
+    "dropped",
+    [EXPIRED, Observation(Screen.LOGIN), REPLACED],
+    ids=["sessao-expirada", "tela-de-login", "outro-dispositivo"],
+)
+async def test_session_lost_after_playing_yields_to_the_owner(
+    sup: Supervisor,
+    driver: FakeDriver,
+    store: StateStore,
+    takeovers: Takeovers,
+    clock: FakeClock,
+    dropped: Observation,
 ) -> None:
-    """Regressão de 04/11/2026: o dono voltou ao PC, o jogo mostrou "Sessão expirada" ao robô em
-    vez de "acessada em outro dispositivo", e o robô entrou com a senha na hora e derrubou o PC."""
-    await _play_then_expire(sup, driver)
+    """Regressão de 11 e 12/11/2026: o dono entrou no jogo, a sessão do keeper caiu ("Sessão
+    expirada", ou recarga sem sinal que caiu no login) e a janela de 15 s entrou com a senha,
+    derrubando o dono. Agora o keeper sai na hora e nunca entra sozinho."""
+    await _play(sup, driver)
+    driver.obs = dropped
     driver.calls.clear()
     d = await sup.tick()
-    assert (d.action, d.phase) == (Action.HOLD, Phase.CONFIRMANDO)
-    assert sup.status().confirm_in == CONFIRM_WINDOW_SECONDS
-    assert store.events(1)[0].kind == "confirmar"
-
-    clock.now += CONFIRM_WINDOW_SECONDS - 1
-    d = await sup.tick()
-    assert (d.action, d.phase) == (Action.NONE, Phase.CONFIRMANDO)
-    assert driver.calls == []  # nem recarga nem login dentro da janela
-
-    # Ninguém respondeu: recarrega, e o login que vem depois não pergunta de novo.
-    clock.now += 1
-    assert (await sup.tick()).action is Action.RELOAD
-    assert store.events(2)[1].message.startswith("Ninguém confirmou")
-    assert sup.status().confirm_in is None
-    driver.obs = Observation(Screen.LOGIN)
-    assert (await sup.tick()).action is Action.LOGIN
-
-    # Voltou a jogar: a próxima queda pergunta de novo.
-    driver.obs = PLAYING
-    await sup.tick()
-    driver.obs = EXPIRED
-    assert (await sup.tick()).action is Action.HOLD
-
-
-async def test_owner_confirms_playing_elsewhere(
-    sup: Supervisor, driver: FakeDriver, store: StateStore
-) -> None:
-    await _play_then_expire(sup, driver)
-    await sup.tick()  # hold
-    await sup.confirm_elsewhere()
+    assert (d.action, d.phase) == (Action.TURN_OFF, Phase.ASSUMIDO)
     assert (store.power.desired_on, store.power.off_reason) == (False, OffReason.REPLACED)
-    assert store.events(1)[0].message == (
-        "Desligado: você confirmou que está jogando em outro aparelho"
-    )
-    assert sup.status().confirm_in is None
-    assert (await sup.tick()).action is Action.CLOSE
+    assert store.events(1)[0].message == TAKEOVER_MESSAGE
+    assert driver.calls == ["close"]
+    assert len(takeovers) == 1
+    # Nada de login nem recarga depois, por mais tempo que passe.
+    for _ in range(5):
+        clock.now += 600
+        assert (await sup.tick()).action is Action.NONE
     assert driver.logins == []
+    assert len(takeovers) == 1
 
 
-async def test_owner_skips_the_window(sup: Supervisor, driver: FakeDriver) -> None:
-    await _play_then_expire(sup, driver)
-    assert await sup.reconnect_now() is False  # sem janela aberta
-    await sup.tick()  # hold
-    assert await sup.reconnect_now() is True
+async def test_no_signal_reload_landing_on_login_yields(
+    sup: Supervisor, driver: FakeDriver, clock: FakeClock, takeovers: Takeovers
+) -> None:
+    """O caso de 12/11 06:14: sem sinal, recarga, tela de login. Recarregar não entra (o token do
+    keeper morreu quando o dono entrou); a tela de login depois de jogar faz o keeper sair."""
+    await _play(sup, driver)
+    driver.obs = Observation(Screen.GAME, signal_age=200.0, screen_age=600.0)
     assert (await sup.tick()).action is Action.RELOAD
+    driver.obs = Observation(Screen.LOGIN)
+    assert (await sup.tick()).action is Action.TURN_OFF
+    assert driver.logins == []
+    assert takeovers == ["a sessão do keeper caiu depois de jogar"]
 
 
-async def test_window_closes_when_the_game_comes_back(sup: Supervisor, driver: FakeDriver) -> None:
-    await _play_then_expire(sup, driver)
-    await sup.tick()  # hold
-    driver.obs = PLAYING
-    assert (await sup.tick()).phase is Phase.JOGANDO
-    assert sup.status().confirm_in is None
-
-
-async def test_turning_on_again_starts_without_window(sup: Supervisor, driver: FakeDriver) -> None:
-    await _play_then_expire(sup, driver)
-    await sup.tick()  # hold
-    await sup.set_power(False)
-    await sup.tick()  # close
+async def test_turning_on_again_logs_in_freely(sup: Supervisor, driver: FakeDriver) -> None:
+    """Ligar de novo (pelo painel ou pelo "keeper assume") é o dono entregando o jogo: o primeiro
+    login é livre."""
+    await _play(sup, driver)
+    driver.obs = EXPIRED
+    await sup.tick()  # sai
     await sup.set_power(True)
     driver.obs = Observation(Screen.LOGIN)
     assert (await sup.tick()).action is Action.LOGIN
+
+
+async def test_restart_while_on_never_logs_in_with_a_dead_token(
+    tmp_path: Path, driver: FakeDriver, secrets_file: Path, clock: FakeClock
+) -> None:
+    """Deploy com a chave ligada: token vivo retoma o jogo; token morto (alguém entrou na conta
+    durante o restart) faz o keeper sair, não entrar com a senha."""
+    first = StateStore(tmp_path / "boot.json")
+    await first.set_power(True)
+    store = StateStore(tmp_path / "boot.json")
+    await store.load()
+    taken: list[str] = []
+
+    async def credentials() -> Secrets:
+        return read_secrets(secrets_file)
+
+    async def hook(reason: str) -> None:
+        taken.append(reason)
+
+    sup = Supervisor(store, driver, credentials, clock=clock, on_takeover=hook)
+    assert (await sup.tick()).action is Action.LAUNCH
+    driver.obs = Observation(Screen.LOGIN)
+    assert (await sup.tick()).action is Action.TURN_OFF
+    assert driver.logins == [] and len(taken) == 1
+
+
+async def test_expired_before_playing_still_reloads(sup: Supervisor, driver: FakeDriver) -> None:
+    """Token velho ao ligar: ainda não jogou neste ciclo, então é recarregar e entrar."""
+    await sup.set_power(True)
+    driver.obs = EXPIRED
+    assert (await sup.tick()).action is Action.RELOAD
 
 
 async def test_remote_viewer_pauses_actions(sup: Supervisor, driver: FakeDriver) -> None:

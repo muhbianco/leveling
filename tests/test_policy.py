@@ -145,40 +145,44 @@ EXPIRED = Observation(Screen.BLOCK, block_kind=BlockKind.RELOGIN, block_text="Se
 
 
 @pytest.mark.parametrize("obs", [EXPIRED, Observation(Screen.LOGIN)])
-@pytest.mark.parametrize(
-    ("relogin", "action"),
-    [(Relogin.ASK, Action.HOLD), (Relogin.WAIT, Action.NONE)],
-)
-def test_relogin_after_playing_waits_for_owner(
-    obs: Observation, relogin: Relogin, action: Action
-) -> None:
-    d = decide(obs, Context(desired_on=True, relogin=relogin))
-    assert (d.action, d.phase) == (action, Phase.CONFIRMANDO)
+def test_session_lost_after_playing_turns_off(obs: Observation) -> None:
+    """Uma conta, um aparelho: depois de jogar, o keeper sai em vez de entrar com a senha."""
+    d = decide(obs, Context(desired_on=True, relogin=Relogin.YIELD))
+    assert (d.action, d.phase, d.off_reason) == (
+        Action.TURN_OFF,
+        Phase.ASSUMIDO,
+        OffReason.REPLACED,
+    )
 
 
-def test_relogin_window_over_goes_ahead() -> None:
+def test_before_playing_relogin_is_free() -> None:
     free = Context(desired_on=True, relogin=Relogin.FREE)
     assert decide(EXPIRED, free).action is Action.RELOAD
     assert decide(Observation(Screen.LOGIN), free).action is Action.LOGIN
 
 
 @pytest.mark.parametrize(
-    ("ctx", "phase"),
+    "ctx",
     [
-        (Context(desired_on=True, manual=True, relogin=Relogin.ASK), Phase.ENTRANDO),
-        (Context(desired_on=True, login_latched=True, relogin=Relogin.ASK), Phase.PRECISA_LOGIN),
-        (Context(desired_on=True, has_credentials=False, relogin=Relogin.ASK), Phase.PRECISA_LOGIN),
+        Context(desired_on=True, login_latched=True, relogin=Relogin.YIELD),
+        Context(desired_on=True, has_credentials=False, relogin=Relogin.YIELD),
     ],
 )
-def test_no_window_when_nothing_would_log_in(ctx: Context, phase: Phase) -> None:
-    d = decide(Observation(Screen.LOGIN), ctx)
-    assert (d.action, d.phase) == (Action.NONE, phase)
+def test_yield_wins_over_login_problems(ctx: Context) -> None:
+    assert decide(Observation(Screen.LOGIN), ctx).action is Action.TURN_OFF
 
 
-def test_window_never_hides_the_replaced_block() -> None:
+def test_remote_screen_open_leaves_it_to_the_human() -> None:
+    ctx = Context(desired_on=True, manual=True, relogin=Relogin.YIELD)
+    assert decide(Observation(Screen.LOGIN), ctx).action is Action.NONE
+    assert decide(EXPIRED, ctx).action is Action.NONE  # só observa: nem recarrega
+
+
+def test_replaced_block_always_turns_off() -> None:
     replaced = Observation(Screen.BLOCK, block_kind=BlockKind.REPLACED)
-    d = decide(replaced, Context(desired_on=True, relogin=Relogin.ASK))
-    assert d.action is Action.TURN_OFF
+    for relogin in Relogin:
+        d = decide(replaced, Context(desired_on=True, manual=True, relogin=relogin))
+        assert (d.action, d.off_reason) == (Action.TURN_OFF, OffReason.REPLACED)
 
 
 def test_loading_too_long_reloads() -> None:

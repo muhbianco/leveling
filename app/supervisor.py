@@ -21,7 +21,6 @@ from playwright.async_api import Error as PlaywrightError
 from app.config import Secrets
 from app.game import Driver, LoginFormError
 from app.policy import (
-    CONFIRM_WINDOW_SECONDS,
     SIGNAL_STALE_SECONDS,
     Action,
     Context,
@@ -47,7 +46,10 @@ DAY_S = 86_400.0
 
 # Fases em que "próxima tentativa" faz sentido no painel.
 RETRYING_PHASES = {Phase.ABRINDO, Phase.RECONECTANDO, Phase.MANUTENCAO, Phase.ENTRANDO}
-CONFIRM_WINDOW_LABEL = f"{CONFIRM_WINDOW_SECONDS:.0f} s"
+TAKEOVER_MESSAGE = (
+    "Desligado: a conta entrou em outro aparelho (você assumiu o jogo). O keeper saiu para não "
+    "derrubar ninguém"
+)
 
 # Fases que viram evento ao entrar nelas (as de liga/desliga já viram evento no StateStore).
 NOTABLE_PHASES = {
@@ -74,8 +76,6 @@ class Status:
     game_username: str
     login_latched: bool
     retry_in: float | None
-    # Segundos até o robô entrar de novo sem confirmação (janela aberta); None fora dela.
-    confirm_in: float | None
 
 
 class Supervisor:
@@ -88,8 +88,12 @@ class Supervisor:
         clock: Callable[[], float] = time.monotonic,
         rng: Callable[[], float] = random.random,
         name: str = "slot",
+        on_takeover: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._name = name  # só para o log: os dois slots escrevem no mesmo stdout
+        # Chamado quando o keeper sai porque a conta entrou em outro aparelho (app/takeover.py
+        # oferece ao dono, por 5 min, o "keeper assume").
+        self._on_takeover = on_takeover
         self._store = store
         self._driver = driver
         self._credentials = credentials
@@ -108,17 +112,16 @@ class Supervisor:
         self._attempts: deque[float] = deque(maxlen=64)  # abrir/recarregar desde o último "jogando"
         self._failures = 0
         self._retry_at = 0.0
-        self._played_since_on = False
+        # Voltando de um restart (deploy) com a chave ligada: o keeper estava jogando antes. Se o
+        # token morreu no meio, alguém entrou na conta nesse intervalo: o keeper sai em vez de
+        # entrar com a senha. Só ligar (pelo painel ou "keeper assume") libera o primeiro login.
+        self._played_since_on = store.power.desired_on
         self._reconnects: deque[float] = deque(maxlen=2000)
 
         self._last_login_at = -math.inf
         self._logins_since_game = 0
         self._login_latched = False
         self._latched_version = 0.0
-
-        # Janela de confirmação antes de entrar com a senha depois de já ter jogado.
-        self._confirm_deadline: float | None = None
-        self._relogin_cleared = False
 
         self._viewers = 0
         self._force_reload = False
@@ -128,12 +131,8 @@ class Supervisor:
     async def run(self) -> None:
         while True:
             await self.tick()
-            timeout = self._tick_seconds
-            if self._confirm_deadline is not None:
-                # Acorda no fim da janela, não no próximo ciclo cheio.
-                timeout = max(0.2, min(timeout, self._confirm_deadline - self._clock()))
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._wake.wait(), timeout=timeout)
+                await asyncio.wait_for(self._wake.wait(), timeout=self._tick_seconds)
             self._wake.clear()
 
     def wake(self) -> None:
@@ -160,13 +159,6 @@ class Supervisor:
                 self._retry_at = 0.0
                 self._logins_since_game = 0
                 self._played_since_on = True
-                self._reset_confirm()
-            elif self._confirm_deadline is not None and now >= self._confirm_deadline:
-                self._confirm_deadline = None
-                self._relogin_cleared = True
-                await self._store.add_event(
-                    "login", f"Ninguém confirmou em {CONFIRM_WINDOW_LABEL}: entrando de novo"
-                )
 
             if not self._login_latched and self._logins_since_game >= MAX_LOGINS_BEFORE_LATCH:
                 self._login_latched = True
@@ -187,7 +179,7 @@ class Supervisor:
                 login_allowed=now - self._last_login_at >= LOGIN_SPACING_S,
                 retry_ready=now >= self._retry_at,
                 attempts_last_hour=sum(1 for t in self._attempts if t > now - HOUR_S),
-                relogin=self._relogin_gate(now),
+                relogin=Relogin.YIELD if self._played_since_on else Relogin.FREE,
             )
             decision = decide(obs, ctx)
             if self._force_reload:
@@ -208,14 +200,6 @@ class Supervisor:
         match d.action:
             case Action.NONE:
                 return
-            case Action.HOLD:
-                self._confirm_deadline = now + CONFIRM_WINDOW_SECONDS
-                await self._store.add_event(
-                    "confirmar",
-                    f"A sessão caiu depois de jogar ({d.reason}). Se foi você em outro aparelho, "
-                    f"confirme no painel; sem resposta em {CONFIRM_WINDOW_LABEL} o keeper entra "
-                    "de novo",
-                )
             case Action.LAUNCH | Action.RELOAD:
                 await self._open(d, now)
             case Action.LOGIN:
@@ -241,9 +225,15 @@ class Supervisor:
                 await self._driver.close()
                 self._reset_run()
             case Action.TURN_OFF:
-                await self._store.set_power(False, d.off_reason or OffReason.ERROR, d.reason)
+                reason = d.off_reason or OffReason.ERROR
+                taken = reason is OffReason.REPLACED
+                await self._store.set_power(
+                    False, reason, d.reason, message=TAKEOVER_MESSAGE if taken else None
+                )
                 await self._driver.close()
                 self._reset_run()
+                if taken and self._on_takeover is not None:
+                    await self._on_takeover(d.reason)
 
     async def _open(self, d: Decision, now: float) -> None:
         self._attempts.append(now)
@@ -281,21 +271,9 @@ class Supervisor:
         self._attempts.clear()
         self._failures = 0
         self._retry_at = 0.0
+        # O primeiro login depois de ligar é livre (o dono acabou de entregar o jogo); depois de
+        # jogar, uma queda da sessão faz o keeper sair (policy.Relogin.YIELD).
         self._played_since_on = False
-        self._reset_confirm()
-
-    def _reset_confirm(self) -> None:
-        self._confirm_deadline = None
-        self._relogin_cleared = False
-
-    def _relogin_gate(self, now: float) -> Relogin:
-        """O primeiro login depois de ligar é livre (o dono acabou de sair do jogo). Depois de já
-        ter jogado, o token cair quase sempre é o dono voltando: pede confirmação antes."""
-        if not self._played_since_on or self._relogin_cleared:
-            return Relogin.FREE
-        if self._confirm_deadline is None:
-            return Relogin.ASK
-        return Relogin.WAIT if now < self._confirm_deadline else Relogin.FREE
 
     def _reset_login(self) -> None:
         self._login_latched = False
@@ -343,29 +321,6 @@ class Supervisor:
             # Deu certo ou não, o navegador pode ter fechado: o próximo ciclo vem já.
             self.wake()
 
-    async def confirm_elsewhere(self) -> None:
-        """O dono confirmou no painel que está jogando em outro aparelho: desliga sem entrar."""
-        async with self._lock:
-            self._reset_confirm()
-        await self._store.set_power(
-            False,
-            OffReason.REPLACED,
-            "confirmado no painel",
-            message="Desligado: você confirmou que está jogando em outro aparelho",
-        )
-        self.wake()
-
-    async def reconnect_now(self) -> bool:
-        """O dono mandou entrar de novo sem esperar a janela. False se não havia janela aberta."""
-        async with self._lock:
-            if self._confirm_deadline is None:
-                return False
-            self._confirm_deadline = None
-            self._relogin_cleared = True
-        await self._store.add_event("login", "Reconexão liberada pelo painel")
-        self.wake()
-        return True
-
     def viewer_joined(self) -> None:
         self._viewers += 1
 
@@ -397,11 +352,6 @@ class Supervisor:
             retry_in=(
                 round(self._retry_at - now, 1)
                 if self._retry_at > now and self.phase in RETRYING_PHASES
-                else None
-            ),
-            confirm_in=(
-                round(max(0.0, self._confirm_deadline - now), 1)
-                if self._confirm_deadline is not None and power.desired_on
                 else None
             ),
         )

@@ -19,7 +19,6 @@ const PHASES = {
   manutencao: ["Jogo em manutenção", "warn"],
   precisa_login: ["Precisa de login", "bad"],
   assumido: ["Assumido por outro aparelho", "off"],
-  confirmando: ["Esperando sua confirmação", "warn"],
   erro: ["Desligado por erro", "bad"],
 };
 
@@ -80,8 +79,9 @@ let eventsSig = "";
 let accountsSig = "";
 let sharedSig = "";
 let myAccessSig = "";
-let confirmUntil = 0;
-let confirmTimer = null;
+let takeoverUntil = 0;
+let takeoverTimer = null;
+let takeoverDismissed = "";
 const BASE_TITLE = document.title;
 
 const timeFmt = new Intl.DateTimeFormat("pt-BR", {
@@ -205,7 +205,7 @@ function render(s) {
   else renderSetup(s);
   renderShared(s.access);
   renderMyAccess(s.access);
-  renderConfirm(s);
+  renderTakeover(s);
 }
 
 function personName(name, email) {
@@ -439,31 +439,48 @@ function bindAccessForms() {
   });
 }
 
-// A sessão caiu depois de jogar: o servidor segura o login por alguns segundos à espera do
-// dono. A contagem é local (a partir do confirm_in do último status); o título da aba avisa
-// mesmo com o painel em segundo plano.
-function renderConfirm(s) {
-  const modal = $("confirm-modal");
-  const open = Boolean(s.slot) && s.desired_on && typeof s.confirm_in === "number";
+// O dono assumiu o jogo em outro aparelho e o keeper saiu. Por 5 min o painel oferece o "keeper
+// assume"; sem resposta, nada acontece (o keeper nunca volta sozinho). A contagem é local, a partir
+// do takeover.left do último status; o título da aba avisa mesmo em segundo plano.
+function renderTakeover(s) {
+  const modal = $("takeover-modal");
+  const offer = s.slot ? s.takeover : null;
+  const open = Boolean(offer) && offer.expires_at !== takeoverDismissed;
   const wasOpen = !modal.hidden;
   if (open) {
-    confirmUntil = Date.now() + s.confirm_in * 1000;
-    if (!confirmTimer) confirmTimer = setInterval(updateCountdown, 250);
-    updateCountdown();
+    takeoverUntil = Date.now() + offer.left * 1000;
+    if (!takeoverTimer) takeoverTimer = setInterval(updateTakeoverCountdown, 500);
+    updateTakeoverCountdown();
   } else {
-    confirmUntil = 0;
-    if (confirmTimer) clearInterval(confirmTimer);
-    confirmTimer = null;
+    takeoverUntil = 0;
+    if (takeoverTimer) clearInterval(takeoverTimer);
+    takeoverTimer = null;
     document.title = BASE_TITLE;
   }
   modal.hidden = !open;
-  if (open && !wasOpen) $("confirm-elsewhere").focus();
+  if (open && !wasOpen) $("takeover-dismiss").focus();
 }
 
-function updateCountdown() {
-  const left = Math.max(0, Math.ceil((confirmUntil - Date.now()) / 1000));
-  $("confirm-count").textContent = String(left);
-  document.title = left > 0 ? `(${left} s) Confirme no keeper` : "Keeper reconectando…";
+function updateTakeoverCountdown() {
+  const left = Math.max(0, Math.ceil((takeoverUntil - Date.now()) / 1000));
+  const text = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+  $("takeover-count").textContent = text;
+  if (left <= 0) {
+    $("takeover-modal").hidden = true;
+    document.title = BASE_TITLE;
+    return;
+  }
+  document.title = `(${text}) Você assumiu o jogo`;
+}
+
+async function takeoverAction(path) {
+  const res = await send(path, "POST");
+  if (res && res.ok) {
+    render(await res.json());
+  } else {
+    await refreshStatus();
+  }
+  await refreshEvents();
 }
 
 async function refreshStatus() {
@@ -627,7 +644,7 @@ function bindEventsBox() {
 }
 
 async function tick(force = false) {
-  // O status roda mesmo com a aba escondida (é leve): é ele que abre a confirmação.
+  // O status roda mesmo com a aba escondida (é leve): é ele que abre o aviso de assumir.
   await refreshStatus();
   if (document.hidden && !force) return;
   await refreshEvents();
@@ -668,16 +685,13 @@ document.addEventListener("DOMContentLoaded", () => {
   $("shared").addEventListener("click", onAccessAction);
   $("my-access").addEventListener("click", onAccessAction);
   bindAccessForms();
-  $("confirm-elsewhere").addEventListener("click", async () => {
-    const res = await send("/api/confirm/elsewhere", "POST");
-    if (res && res.ok) render(await res.json());
-    await refreshEvents();
-  });
-  $("confirm-reconnect").addEventListener("click", async () => {
-    const res = await send("/api/confirm/reconnect", "POST");
-    if (res && res.ok) render(await res.json());
-    else await refreshStatus();
-    await refreshEvents();
+  $("takeover-retake").addEventListener("click", () => takeoverAction("/api/takeover/retake"));
+  $("takeover-dismiss").addEventListener("click", () => {
+    // Fecha já na tela; o servidor também descarta a oferta (o link do WhatsApp deixa de valer).
+    if (current && current.takeover) takeoverDismissed = current.takeover.expires_at;
+    $("takeover-modal").hidden = true;
+    document.title = BASE_TITLE;
+    takeoverAction("/api/takeover/dismiss");
   });
   bindEventsBox();
   document.addEventListener("visibilitychange", () => {

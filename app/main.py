@@ -33,6 +33,7 @@ from app.slots import (
 )
 from app.state import StateStore
 from app.supervisor import Supervisor
+from app.takeover import TakeoverRelay, TakeoverService
 from app.whatsapp import WuzapiMessenger
 
 logger = logging.getLogger("app")
@@ -47,7 +48,11 @@ def _log_supervisor_end(task: asyncio.Task[None]) -> None:
 
 
 def runtime_factory(
-    cfg: Settings, pw: Playwright, registry: SlotRegistry, accounts: AccountStore
+    cfg: Settings,
+    pw: Playwright,
+    registry: SlotRegistry,
+    accounts: AccountStore,
+    relay: TakeoverRelay,
 ) -> RuntimeFactory:
     async def build(record: SlotRecord) -> SlotRuntime:
         slot_dir = registry.slot_dir(record.id)
@@ -67,6 +72,7 @@ def runtime_factory(
             credentials_provider(cfg, accounts, record),
             tick_seconds=cfg.tick_seconds,
             name=f"slot {record.id}",
+            on_takeover=relay.for_slot(record.id),
         )
         task = asyncio.create_task(supervisor.run(), name=f"supervisor-{record.id}")
         task.add_done_callback(_log_supervisor_end)
@@ -89,18 +95,25 @@ def create_app(settings: Settings | None = None, prebuilt: Services | None = Non
         pw = await async_playwright().start()
         registry = SlotRegistry(cfg.data_dir, cfg.max_slots)
         accounts = AccountStore(registry)
-        slots = SlotManager(cfg, registry, accounts, runtime_factory(cfg, pw, registry, accounts))
+        relay = TakeoverRelay()
+        factory = runtime_factory(cfg, pw, registry, accounts, relay)
+        slots = SlotManager(cfg, registry, accounts, factory)
+        messenger = WuzapiMessenger(cfg)
+        # Antes dos supervisores começarem: uma saída por "assumido" no boot já ganha a oferta.
+        takeover = TakeoverService(cfg, slots, messenger)
+        relay.target = takeover
         await slots.start()
         auth = AuthService(cfg, OidcClient(cfg))
         await auth.load()
-        access = AccessService(cfg, slots, WuzapiMessenger(cfg))
+        access = AccessService(cfg, slots, messenger)
         await access.load()
-        app.state.services = Services(auth, slots, access)
+        app.state.services = Services(auth, slots, access, takeover)
         logger.info("started with %s/%s slots", slots.used, cfg.max_slots)
         try:
             yield
         finally:
             await access.stop()
+            await takeover.stop()
             await slots.stop_all()
             await pw.stop()
             logger.info("stopped")

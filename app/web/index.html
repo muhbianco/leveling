@@ -178,17 +178,19 @@
     </section>
   </main>
 
-  <div class="modal" id="confirm-modal" role="alertdialog" aria-modal="true"
-       aria-labelledby="confirm-title" aria-describedby="confirm-text" hidden>
+  <div class="modal" id="takeover-modal" role="alertdialog" aria-modal="true"
+       aria-labelledby="takeover-title" aria-describedby="takeover-text" hidden>
     <div class="modal-card">
-      <h2 id="confirm-title">A sessão do keeper caiu no meio do jogo</h2>
-      <p id="confirm-text">Foi você entrando no jogo em outro aparelho? Sem resposta, o keeper
-        entra de novo em <strong class="countdown" id="confirm-count">15</strong> s, e isso derruba
-        o outro aparelho.</p>
+      <h2 id="takeover-title">Você assumiu o controle do jogo</h2>
+      <p id="takeover-text">A sua conta entrou em outro aparelho e o keeper saiu para não derrubar
+        você. Se não era sua intenção, clique em "Keeper assume". Se sua intenção é jogar, ignore:
+        este aviso fecha em <strong class="countdown" id="takeover-count">5:00</strong>.</p>
       <div class="actions">
-        <button type="button" class="button primary" id="confirm-elsewhere">Sou eu, desliga o keeper</button>
-        <button type="button" class="button" id="confirm-reconnect">Não sou eu, reconectar</button>
+        <button type="button" class="button primary" id="takeover-retake">Keeper assume</button>
+        <button type="button" class="button" id="takeover-dismiss">Estou jogando</button>
       </div>
+      <p class="hint">"Keeper assume" entra com a senha e derruba o outro aparelho: o jogo não
+        deixa a mesma conta em dois lugares.</p>
     </div>
   </div>
 </body>

@@ -23,47 +23,89 @@ para os e-mails Google de `ADMIN_EMAILS` (dono) e `PLAYER_EMAILS` (jogadores lib
   mesma conta gastariam as duas vagas de IP e uma derrubaria a outra.
 - **Ligado:** o servidor abre o jogo num Chromium de verdade e fica conectado.
 - **Desligado:** o navegador do servidor fecha.
-- **Desliga sozinho** quando a conta entra em outro aparelho (`session.replaced`). Basta abrir o
-  jogo no PC; lembrar de ligar quando sair.
+- **Sai sozinho** quando a conta entra em outro aparelho: basta abrir o jogo no PC. O keeper
+  nunca volta sozinho; ligue quando sair (ver "Quando o dono assume o jogo").
 
 ## Acesso à tela remota de outro jogador (`app/access.py`)
 
-Os admins (`ADMIN_EMAILS`) veem, no painel, o card "Instâncias dos outros jogadores" e podem
-pedir acesso à tela remota da instância de outro jogador. Quem está só em `PLAYER_EMAILS` vê só a
-própria instância.
+Os admins (`ADMIN_EMAILS`) veem, no painel, o card "Instâncias dos outros jogadores". Quem está
+só em `PLAYER_EMAILS` vê só a própria instância. Há dois modos, e os dois pedem **tempo** (1 h,
+4 h, 12 h ou sempre aberto) e **motivo**.
 
-1. **Pedido.** O admin clica em "Pedir acesso". O keeper manda ao WhatsApp do dono da instância
-   (`PLAYER_PHONES`) um link `https://leveling.muhbianco.com.br/acesso/<token>`, que vale 1 h.
+**Pedir acesso** (quem quer ver):
+
+1. **Pedido.** O admin clica em "Pedir acesso", escolhe o tempo e escreve o motivo. O keeper manda
+   ao WhatsApp do dono da instância (`PLAYER_PHONES`) um convite
+   `https://leveling.muhbianco.com.br/acesso/<token>`, que vale **4 h**.
    - O envio é pela WuzAPI, na sessão do MegaPromoOz (a mesma do sesi-vagas).
    - O pedido aparece também no card "Acesso à sua instância" do painel do dono. Isso vale com o
      WhatsApp fora do ar e com o dono sem telefone cadastrado.
-2. **Liberação.** O dono abre o link. Sem sessão, ele passa pelo Google e volta para o link.
-   - Ele escolhe 1 h, 12 h ou 7 dias, ou recusa.
-   - Quem libera é a **sessão Google do dono**; o token só localiza o pedido. Um link encaminhado
+2. **Aceite.** O dono abre o convite. Sem sessão, ele passa pelo Google e volta para o link.
+   - Ele aceita (vale o tempo pedido, **contado a partir do aceite**) ou recusa.
+   - Quem aceita é a **sessão Google do dono**; o token só localiza o pedido. Um link encaminhado
      para outra conta mostra "outra conta" e não libera nada.
    - No disco fica só o hash do token.
 3. **Uso.** Quem pediu recebe um WhatsApp com `/remota?slot=N` e abre com a sessão Google dele.
-   - É a mesma tela remota do dono: vê e mexe no jogo.
-   - Enquanto ela está aberta, o robô daquela instância só observa.
-4. **Fim.** O acesso cai quando:
-   - o prazo vence;
-   - o dono revoga ou quem recebeu abre mão (ambos no painel);
-   - o dono apaga a instância;
-   - qualquer um dos dois sai da lista de e-mails.
 
-   A tela remota aberta cai na hora (WebSocket fechado com 1008), e a página para de reconectar.
+**Abrir minha instância** (o dono, por conta própria):
+
+- No card "Acesso à sua instância", o dono escolhe para quem (um jogador ou **todos**), o tempo e o
+  motivo. Quem recebe é avisado no WhatsApp.
+- "Todos os jogadores" vale para qualquer admin, inclusive quem entrar depois.
+- Abrir de novo para o mesmo destino troca o tempo e o motivo.
+
+**Fim.** O acesso cai quando:
+
+- o prazo vence ("sempre aberto" não vence);
+- o dono fecha (no painel), ou quem recebeu abre mão do acesso pessoal;
+- o dono apaga a instância;
+- alguém sai da lista de e-mails.
+
+A tela remota aberta reavalia a cada mudança no slot. Se ninguém mais cobre quem está vendo, ela
+cai na hora (WebSocket fechado com 1008) e a página para de reconectar. Perder o acesso pessoal
+com a instância ainda aberta para todos não derruba a tela.
 
 Regras:
 
-- **Um pedido por par de cada vez.** Um pedido recusado segura o próximo até expirar, para o
-  WhatsApp do dono não virar alvo de insistência. Quando o WhatsApp falha, dá para pedir de novo.
-- **Eventos do dono:** pedido, liberação, recusa, revogação e cada abrir/fechar da tela por outro
-  jogador.
+- **Um pedido por par de cada vez.** Um pedido recusado segura o próximo até o convite expirar,
+  para o WhatsApp do dono não virar alvo de insistência. Quando o WhatsApp falha, dá para pedir de
+  novo.
+- **Eventos do dono:** pedido (com tempo e motivo), aceite, recusa, abertura, fechamento e cada
+  abrir/fechar da tela por outro jogador.
 - **Só a tela remota.** Ligar ou desligar, contas e apagar a instância continuam só com o dono.
+  Enquanto alguém está na tela remota, o robô daquela instância só observa.
 - **A conta do jogo do arquivo de segredos é só do dono** (o primeiro de `ADMIN_EMAILS`), mesmo
   com todos os jogadores admin.
 - **Sem troca de itens ou gold entre as contas.** É a condição combinada com o dev do jogo
   (ver "Slots e IPs"). Usar o acesso para isso transforma pessoas diferentes em multi-conta.
+
+## Quando o dono assume o jogo (`app/takeover.py`)
+
+**Uma conta, um aparelho.** O jogo não deixa a mesma conta em dois lugares: um derruba o outro e,
+repetindo, o jogo bloqueia a conta por minutos. Por isso, depois de já ter jogado neste ciclo, o
+keeper **nunca entra com a senha sozinho**.
+
+- **Qualquer queda da sessão conta como o dono assumindo:** "acessada em outro dispositivo",
+  "Sessão expirada", ou recarga sem sinal que cai na tela de login. O keeper desliga
+  ("assumido") e fecha o navegador na hora.
+- **Por 5 min o dono pode mandar o keeper voltar:**
+  - painel aberto (consultou o status há menos de 15 s): modal "Você assumiu o controle do
+    jogo", com "Keeper assume" e "Estou jogando";
+  - painel fechado: WhatsApp com o link `/retomar/<token>`, que pede a sessão Google do dono.
+- **Sem resposta, nada acontece.** O keeper continua desligado e o dono segue jogando. Para ele
+  voltar depois, é ligar pela chave.
+- **O primeiro login depois de ligar é livre:** ligar (pela chave ou pelo "Keeper assume") é o dono
+  entregando o jogo. Voltar de um restart (deploy) com a chave ligada não conta: o keeper retoma
+  pelo token; se o token morreu no intervalo, ele sai e avisa, como numa queda.
+
+**Regressão de 11 e 12/11/2026.** Antes havia uma janela de 15 s que, sem resposta, entrava com a
+senha. Nas duas vezes ela derrubou o dono, e o jogo deixou a conta desconectada por minutos:
+
+- às 22:34, com "Sessão expirada";
+- às 06:14, com recarga sem sinal que caiu na tela de login.
+
+**Ainda não medido:** se um reinício do servidor do jogo mata o token do keeper. Se matar, o
+keeper também sai e espera o dono.
 
 ## Como o jogo funciona (lido do cliente em 02/11/2026)
 
@@ -98,13 +140,8 @@ Regras:
   do `fill`, o campo ficava com o texto duas vezes (medido na imagem do keeper, com senha salva e
   CPU apertada: 16 logins errados em 250; com a conferência, 0 em 250). Senha salva ali também
   fica no volume praticamente em claro (`--password-store=basic`), fora da cifragem das contas.
-- **Confirmação antes de entrar de novo.** O primeiro login depois de ligar é livre. Se o token
-  cair depois de o robô já ter jogado nesse ciclo, ele segura o login por 15 s e abre um modal no
-  painel. O título da aba conta os segundos, mesmo com a aba em segundo plano.
-  - "Sou eu, desliga o keeper": desliga sem entrar.
-  - "Não sou eu, reconectar": entra na hora.
-  - Sem resposta: entra de novo.
-  Ninguém vê o outro aparelho, então a dúvida não se resolve sozinha.
+- **Depois de jogar, não entra com a senha sozinho.** A sessão caiu: desliga e oferece ao dono,
+  por 5 min, o "Keeper assume" (ver "Quando o dono assume o jogo").
 - **Não simula presença nem responde anti-AFK.** Se o jogo encerrar por inatividade
   (`session.idle`), ser desconectado pelo servidor, suspender a conta ou acusar multi-conta por IP,
   o robô **desliga** em vez de insistir.

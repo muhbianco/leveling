@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ from app.slots import (
 )
 from app.state import StateStore
 from app.supervisor import Supervisor
+from app.takeover import OFFER_SECONDS, TakeoverRelay, TakeoverService
 from app.whatsapp import SendResult
 from tests.test_supervisor import FakeDriver
 
@@ -153,6 +155,8 @@ class World:
     access: AccessService
     messenger: FakeMessenger
     clock: FakeClock
+    takeover: TakeoverService
+    monotonic: FakeClock
 
 
 @pytest.fixture
@@ -164,25 +168,33 @@ def build_world(settings: Settings, google: FakeGoogle) -> World:
     registry = SlotRegistry(settings.data_dir, settings.max_slots)
     accounts = AccountStore(registry)
     drivers: dict[int, FakeDriver] = {}
+    relay = TakeoverRelay()
 
     async def build(record: SlotRecord) -> SlotRuntime:
         driver = FakeDriver()
         drivers[record.id] = driver
         store = StateStore(registry.slot_dir(record.id) / "state.json")
         await store.load()
-        sup = Supervisor(store, driver, credentials_provider(settings, accounts, record))
+        sup = Supervisor(
+            store,
+            driver,
+            credentials_provider(settings, accounts, record),
+            on_takeover=relay.for_slot(record.id),
+        )
         return SlotRuntime(record, store, sup, driver, settings.vnc_port_for(record.id))
 
     slots = SlotManager(settings, registry, accounts, build)
+    messenger, clock, monotonic = FakeMessenger(), FakeClock(), FakeClock()
+    takeover = TakeoverService(settings, slots, messenger, clock=clock, monotonic=monotonic)
+    relay.target = takeover
     asyncio.run(slots.start())
     auth = AuthService(
         settings, OidcClient(settings, transport=httpx.MockTransport(google.handler))
     )
-    messenger, clock = FakeMessenger(), FakeClock()
     access = AccessService(settings, slots, messenger, clock=clock)
     asyncio.run(access.load())
-    app = create_app(settings, Services(auth, slots, access))
-    return World(app, slots, registry, drivers, access, messenger, clock)
+    app = create_app(settings, Services(auth, slots, access, takeover))
+    return World(app, slots, registry, drivers, access, messenger, clock, takeover, monotonic)
 
 
 @pytest.fixture
@@ -465,8 +477,8 @@ def test_delete_frees_the_slot(client: TestClient, google: FakeGoogle, world: Wo
         ("post", "/api/power", {"on": True}),
         ("post", "/api/reload", None),
         ("post", "/api/retry-login", None),
-        ("post", "/api/confirm/elsewhere", None),
-        ("post", "/api/confirm/reconnect", None),
+        ("post", "/api/takeover/retake", {}),
+        ("post", "/api/takeover/dismiss", None),
     ],
 )
 def test_actions_without_instance_conflict(
@@ -673,19 +685,24 @@ def test_failed_switch_keeps_the_account(
     )
 
 
-# --- confirmação antes de entrar de novo -----------------------------------------------------
+# --- o dono assumiu o jogo: "keeper assume" por 5 min ----------------------------------------
+
+TAKEOVER_LINK = re.compile(r"https://leveling\.test/retomar/([A-Za-z0-9_-]{20,64})")
 
 
-def open_confirmation(client: TestClient, google: FakeGoogle, world: World) -> str:
-    """Jogador liga, o robô chega a jogar e a sessão cai com "Sessão expirada"."""
+def take_over(client: TestClient, google: FakeGoogle, world: World, panel_open: bool) -> str:
+    """O jogador liga, o keeper chega a jogar e a sessão cai com "Sessão expirada" (o dono
+    entrando no jogo em outro aparelho). `panel_open`: o painel consultou o status há pouco."""
     csrf = login(client, google, PLAYER)
     create_instance(client, csrf, username="pug")
     assert client.post("/api/power", json={"on": True}, headers=write(csrf)).status_code == 200
     runtime = world.slots.for_email(PLAYER)
     assert runtime is not None
     driver = world.drivers[1]
+    if not panel_open:
+        world.monotonic.now += 60  # o último status do painel ficou para trás
 
-    async def play_then_expire() -> None:
+    async def play_then_lose() -> None:
         await runtime.supervisor.tick()  # abre
         driver.obs = Observation(Screen.GAME, signal_age=1.0, screen_age=600.0)
         await runtime.supervisor.tick()
@@ -693,45 +710,104 @@ def open_confirmation(client: TestClient, google: FakeGoogle, world: World) -> s
             Screen.BLOCK, block_kind=BlockKind.RELOGIN, block_text="Sessão expirada"
         )
         await runtime.supervisor.tick()
+        await world.takeover.drain()
 
-    asyncio.run(play_then_expire())
+    asyncio.run(play_then_lose())
     return csrf
 
 
-def test_status_shows_the_confirmation_window(
+def test_takeover_with_panel_open_shows_the_modal_only(
     client: TestClient, google: FakeGoogle, world: World
 ) -> None:
-    open_confirmation(client, google, world)
+    take_over(client, google, world, panel_open=True)
     body = client.get("/api/status").json()
-    assert body["phase"] == "confirmando"
-    assert 0 < body["confirm_in"] <= 15
-    assert world.drivers[1].logins == []
-
-
-def test_confirm_elsewhere_turns_off_without_logging_in(
-    client: TestClient, google: FakeGoogle, world: World
-) -> None:
-    csrf = open_confirmation(client, google, world)
-    res = client.post("/api/confirm/elsewhere", headers=write(csrf))
-    assert res.status_code == 200
-    body = res.json()
-    assert (body["desired_on"], body["off_reason"], body["confirm_in"]) == (
+    assert (body["desired_on"], body["phase"], body["off_reason"]) == (
         False,
         "assumido",
-        None,
+        "assumido",
     )
+    assert 0 < body["takeover"]["left"] <= OFFER_SECONDS
+    assert world.messenger.sent == []
     assert world.drivers[1].logins == []
 
 
-def test_confirm_reconnect_skips_the_wait(
+def test_takeover_with_panel_closed_sends_the_link(
+    client: TestClient, google: FakeGoogle, world: World, settings: Settings
+) -> None:
+    settings.phone_map[PLAYER] = "5512988887777"
+    take_over(client, google, world, panel_open=False)
+    [(phone, text)] = world.messenger.sent
+    assert phone == "5512988887777"
+    assert "Você assumiu o controle do jogo" in text and "ignore esta mensagem" in text
+    found = TAKEOVER_LINK.search(text)
+    assert found is not None
+    token = found.group(1)
+    events = [e["message"] for e in client.get("/api/events").json()["events"]]
+    assert any("link 'keeper assume' enviado no WhatsApp" in m for m in events)
+
+    # O link leva à página, que confere a oferta com a sessão do dono.
+    page = client.get(f"/retomar/{token}")
+    assert page.status_code == 200 and "/static/retomar.js" in page.text
+    assert client.get(f"/api/takeover/link/{token}").json()["expires_at"].endswith("Z")
+
+
+def test_retake_from_the_link_turns_the_keeper_on(
+    client: TestClient, google: FakeGoogle, world: World, settings: Settings, other: TestClient
+) -> None:
+    settings.phone_map[PLAYER] = "5512988887777"
+    csrf = take_over(client, google, world, panel_open=False)
+    found = TAKEOVER_LINK.search(world.messenger.sent[0][1])
+    assert found is not None
+    token = found.group(1)
+    # Outra conta com o link encaminhado não religa nada.
+    other_csrf = login(other, google, ADMIN)
+    assert other.get(f"/api/takeover/link/{token}").json()["detail"] == "outra_conta"
+    res = other.post("/api/takeover/retake", json={"token": token}, headers=write(other_csrf))
+    assert res.status_code == 409  # sem instância própria
+    res = client.post("/api/takeover/retake", json={"token": token}, headers=write(csrf))
+    assert res.status_code == 200
+    body = res.json()
+    assert (body["desired_on"], body["takeover"]) == (True, None)
+    again = client.post("/api/takeover/retake", json={"token": token}, headers=write(csrf))
+    assert (again.status_code, again.json()["detail"]) == (404, "oferta_expirada")
+
+
+def test_retake_from_the_panel_and_expiry(
     client: TestClient, google: FakeGoogle, world: World
 ) -> None:
-    csrf = open_confirmation(client, google, world)
-    res = client.post("/api/confirm/reconnect", headers=write(csrf))
+    csrf = take_over(client, google, world, panel_open=True)
+    world.clock.now += OFFER_SECONDS + 1  # ninguém clicou: o aviso some, o keeper fica desligado
+    body = client.get("/api/status").json()
+    assert (body["desired_on"], body["takeover"]) == (False, None)
+    res = client.post("/api/takeover/retake", json={}, headers=write(csrf))
+    assert (res.status_code, res.json()["detail"]) == (404, "oferta_expirada")
+    assert world.drivers[1].logins == []
+
+
+def test_panel_retake_within_the_window(
+    client: TestClient, google: FakeGoogle, world: World
+) -> None:
+    csrf = take_over(client, google, world, panel_open=True)
+    res = client.post("/api/takeover/retake", json={}, headers=write(csrf))
     assert res.status_code == 200
-    assert res.json()["confirm_in"] is None
-    again = client.post("/api/confirm/reconnect", headers=write(csrf))
-    assert (again.status_code, again.json()["detail"]) == (409, "sem_confirmacao")
+    assert res.json()["desired_on"] is True
+    events = [e["message"] for e in client.get("/api/events").json()["events"]]
+    assert "Keeper assume de novo: pedido pelo dono" in events
+
+
+def test_dismiss_and_manual_power_close_the_offer(
+    client: TestClient, google: FakeGoogle, world: World
+) -> None:
+    csrf = take_over(client, google, world, panel_open=True)
+    res = client.post("/api/takeover/dismiss", headers=write(csrf))
+    assert (res.status_code, res.json()["takeover"], res.json()["desired_on"]) == (200, None, False)
+    # Uma nova saída abre outra oferta; ligar pela chave também a encerra.
+    runtime = world.slots.for_email(PLAYER)
+    assert runtime is not None
+    asyncio.run(world.takeover.on_takeover(runtime.record.id, "teste"))
+    assert client.get("/api/status").json()["takeover"] is not None
+    on = client.post("/api/power", json={"on": True}, headers=write(csrf))
+    assert on.json()["takeover"] is None
 
 
 def test_account_routes_without_instance(client: TestClient, google: FakeGoogle) -> None:

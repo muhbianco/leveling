@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Keeper assume · Leveling Keeper</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/retomar.js" defer></script>
+</head>
+<body class="login">
+  <main class="card access-card">
+    <h1>Leveling Keeper</h1>
+    <p class="muted small" id="who"></p>
+
+    <div id="loading"><p class="muted">Carregando…</p></div>
+
+    <div id="ask" hidden>
+      <h2>Você assumiu o controle do jogo</h2>
+      <p>A sua conta entrou em outro aparelho e o keeper saiu para não derrubar você.</p>
+      <p>Se não era sua intenção, clique em <strong>Keeper assume</strong>. Se sua intenção é
+        jogar, ignore: este link expira às <strong id="until"></strong>.</p>
+      <div class="actions center">
+        <button type="button" class="button primary" id="retake">Keeper assume</button>
+      </div>
+      <p class="hint">O keeper entra com a senha e derruba o outro aparelho: o jogo não deixa a
+        mesma conta em dois lugares.</p>
+    </div>
+
+    <div id="done" hidden>
+      <p>Pronto: o keeper está ligado e vai entrar no jogo de novo.</p>
+    </div>
+
+    <div id="refused" hidden>
+      <p class="error" id="refused-text"></p>
+      <div class="actions center">
+        <button type="button" class="button" id="switch" hidden>Sair e entrar com outra conta</button>
+      </div>
+    </div>
+
+    <p class="error" id="error" hidden></p>
+    <p><a class="link" href="/">Ir para o painel</a></p>
+  </main>
+</body>
+</html>

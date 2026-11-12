@@ -34,9 +34,9 @@ SESSION_TTL_S = 30 * 86_400
 FLOW_TTL_S = 600
 MAX_SESSIONS = 10
 MAX_FLOWS = 32
-# Para onde o login volta além de "/": só o link de pedido de acesso (allowlist, sem redirect
-# aberto). O link chega pelo WhatsApp e o dono pode estar sem sessão no aparelho.
-RETURN_PATH = re.compile(r"^/acesso/[A-Za-z0-9_-]{20,64}$")
+# Para onde o login volta além de "/": só os links que chegam pelo WhatsApp (convite de acesso e
+# "keeper assume"), em allowlist, sem redirect aberto. O dono pode estar sem sessão no aparelho.
+RETURN_PATH = re.compile(r"^/(?:acesso|retomar)/[A-Za-z0-9_-]{20,64}$")
 
 
 def _sha(value: str) -> str:

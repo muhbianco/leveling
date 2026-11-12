@@ -38,6 +38,7 @@ from app.auth import (
 )
 from app.config import Settings
 from app.slots import ACCOUNT_ID_PATTERN, MAX_ACCOUNTS, SlotError, SlotManager, SlotRuntime
+from app.takeover import TakeoverError, TakeoverService
 from app.vnc import bridge
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -47,6 +48,7 @@ STATIC_FILES = {
     "remota.js": "text/javascript",
     "remota.css": "text/css",
     "acesso.js": "text/javascript",
+    "retomar.js": "text/javascript",
 }
 SCREENSHOT_MIN_INTERVAL_S = 2.0
 # Tela remota: o visor próprio (/remota, sobre o núcleo do noVNC) é o padrão; a UI do noVNC fica
@@ -82,6 +84,11 @@ ACCESS_ERROR_STATUS = {
     "pedidos_demais": status.HTTP_429_TOO_MANY_REQUESTS,
     "acessos_demais": status.HTTP_429_TOO_MANY_REQUESTS,
 }
+# "Keeper assume" depois de o dono assumir o jogo (TakeoverError.code).
+TAKEOVER_ERROR_STATUS = {
+    "oferta_expirada": status.HTTP_404_NOT_FOUND,
+    "outra_conta": status.HTTP_403_FORBIDDEN,
+}
 
 LOGIN_ERRORS = {
     "conta_nao_autorizada": "Esta conta Google não tem acesso a este painel.",
@@ -99,10 +106,17 @@ class Services:
     auth: AuthService
     slots: SlotManager
     access: AccessService
+    takeover: TakeoverService
 
 
 class PowerIn(BaseModel):
     on: bool
+
+
+class RetakeIn(BaseModel):
+    """'Keeper assume': pelo painel (sem token) ou pelo link do WhatsApp (com o token)."""
+
+    token: str | None = Field(default=None, pattern=TOKEN_PATTERN)
 
 
 # Tempo de acesso (app.access.DURATIONS) e motivo, nos dois modos.
@@ -178,6 +192,12 @@ def _refused(exc: SlotError) -> HTTPException:
 def _access_refused(exc: AccessError) -> HTTPException:
     return HTTPException(
         ACCESS_ERROR_STATUS.get(exc.code, status.HTTP_409_CONFLICT), detail=exc.code
+    )
+
+
+def _takeover_refused(exc: TakeoverError) -> HTTPException:
+    return HTTPException(
+        TAKEOVER_ERROR_STATUS.get(exc.code, status.HTTP_409_CONFLICT), detail=exc.code
     )
 
 
@@ -313,6 +333,8 @@ def build_router(settings: Settings) -> APIRouter:
     @router.post("/api/power")
     async def power(body: PowerIn, svc: Svc, sess: WriteSession) -> JSONResponse:
         await _runtime(svc, sess).supervisor.set_power(body.on)
+        if body.on:
+            svc.takeover.clear(sess.email)
         return await _status_response(svc, sess)
 
     @router.post("/api/reload", status_code=status.HTTP_202_ACCEPTED)
@@ -323,18 +345,47 @@ def build_router(settings: Settings) -> APIRouter:
         await runtime.supervisor.request_reload()
         return Response(status_code=status.HTTP_202_ACCEPTED)
 
-    @router.post("/api/confirm/elsewhere")
-    async def confirm_elsewhere(svc: Svc, sess: WriteSession) -> JSONResponse:
-        """Modal: "sou eu, estou jogando em outro aparelho". Desliga sem entrar com a senha."""
-        await _runtime(svc, sess).supervisor.confirm_elsewhere()
+    # --- o dono assumiu o jogo: "keeper assume" por 5 min -------------------------------------
+
+    @router.post("/api/takeover/retake")
+    async def takeover_retake(body: RetakeIn, svc: Svc, sess: WriteSession) -> JSONResponse:
+        """O dono manda o keeper assumir de novo (o login derruba o outro aparelho)."""
+        _runtime(svc, sess)
+        try:
+            await svc.takeover.retake(sess.email, body.token)
+        except TakeoverError as exc:
+            raise _takeover_refused(exc) from exc
         return await _status_response(svc, sess)
 
-    @router.post("/api/confirm/reconnect")
-    async def confirm_reconnect(svc: Svc, sess: WriteSession) -> JSONResponse:
-        """Modal: "não sou eu". Entra de novo sem esperar o fim da janela."""
-        if not await _runtime(svc, sess).supervisor.reconnect_now():
-            raise HTTPException(status.HTTP_409_CONFLICT, detail="sem_confirmacao")
+    @router.post("/api/takeover/dismiss")
+    async def takeover_dismiss(svc: Svc, sess: WriteSession) -> JSONResponse:
+        """'Estou jogando': fecha o aviso; o keeper fica desligado."""
+        _runtime(svc, sess)
+        await svc.takeover.dismiss(sess.email)
         return await _status_response(svc, sess)
+
+    @router.get("/api/takeover/link/{token}")
+    async def takeover_link(token: LinkToken, svc: Svc, sess: ReadSession) -> JSONResponse:
+        """A oferta por trás do link do WhatsApp, para a página /retomar. Só para o dono."""
+        headers = {"Cache-Control": "no-store"}
+        base = {"email": sess.email, "csrf": sess.csrf}
+        try:
+            offer = svc.takeover.resolve(sess.email, token)
+        except TakeoverError as exc:
+            return JSONResponse(
+                {**base, "detail": exc.code},
+                status_code=TAKEOVER_ERROR_STATUS.get(exc.code, status.HTTP_409_CONFLICT),
+                headers=headers,
+            )
+        return JSONResponse({**base, "expires_at": iso_z(offer.expires_at)}, headers=headers)
+
+    @router.get("/retomar/{token}", response_class=HTMLResponse)
+    async def takeover_page(token: LinkToken, request: Request, svc: Svc) -> Response:
+        """Link do WhatsApp. Sem sessão, passa pelo Google e volta aqui."""
+        if svc.auth.session_for(request.cookies.get(SESSION_COOKIE)) is None:
+            query = urlencode({"next": f"/retomar/{token}"})
+            return RedirectResponse(f"/auth/login?{query}", status_code=status.HTTP_303_SEE_OTHER)
+        return FileResponse(WEB_DIR / "retomar.html", media_type="text/html", headers=PAGE_HEADERS)
 
     @router.post("/api/retry-login", status_code=status.HTTP_202_ACCEPTED)
     async def retry_login(svc: Svc, sess: WriteSession) -> Response:
@@ -536,6 +587,9 @@ async def _status_response(svc: Services, sess: Session) -> JSONResponse:
             "max_accounts": MAX_ACCOUNTS,
         }
         payload["vnc_url"] = REMOTE_URL
+        # Painel do dono aberto: o aviso de "assumiu o jogo" vai no modal, não no WhatsApp.
+        svc.takeover.panel_seen(sess.email)
+        payload["takeover"] = svc.takeover.view(sess.email)
     payload["access"] = svc.access.view(sess.email)
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
