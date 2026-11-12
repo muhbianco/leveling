@@ -15,7 +15,7 @@ const PHASES = {
   abrindo: ["Abrindo o jogo", "busy"],
   entrando: ["Entrando", "busy"],
   jogando: ["Jogando", "ok"],
-  reconectando: ["Reconectando", "warn"],
+  reconectando: ["Conexão em dúvida", "warn"],
   manutencao: ["Jogo em manutenção", "warn"],
   precisa_login: ["Precisa de login", "bad"],
   assumido: ["Assumido por outro aparelho", "off"],

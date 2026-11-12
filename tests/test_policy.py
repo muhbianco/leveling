@@ -211,6 +211,19 @@ def test_login_without_saved_session_types_the_password() -> None:
     assert (d.action, d.reason) == (Action.LOGIN, "entrando com usuário e senha")
 
 
+DEAD_GAME = Observation(Screen.GAME, signal_age=95.0, screen_age=600.0)
+
+
+def test_silence_after_playing_turns_off_instead_of_reloading() -> None:
+    d = decide(DEAD_GAME, Context(desired_on=True, relogin=Relogin.YIELD))
+    assert (d.action, d.off_reason) == (Action.TURN_OFF, OffReason.REPLACED)
+    assert decide(DEAD_GAME, Context(desired_on=True)).action is Action.RELOAD  # antes de jogar
+    manual = Context(desired_on=True, manual=True, relogin=Relogin.YIELD)
+    assert decide(DEAD_GAME, manual).action is Action.NONE  # tela remota aberta: só observa
+    doubt = Observation(Screen.GAME, signal_age=45.0, screen_age=600.0)
+    assert decide(doubt, Context(desired_on=True, relogin=Relogin.YIELD)).action is Action.NONE
+
+
 def test_loading_too_long_reloads() -> None:
     assert decide(Observation(Screen.LOADING, screen_age=10.0), ON).action is Action.NONE
     assert decide(Observation(Screen.LOADING, screen_age=120.0), ON).action is Action.RELOAD

@@ -86,8 +86,15 @@ repetindo, o jogo bloqueia a conta por minutos. Por isso, depois de já ter joga
 keeper **nunca entra com a senha sozinho**.
 
 - **Qualquer queda da sessão conta como o dono assumindo:** "acessada em outro dispositivo",
-  "Sessão expirada", ou recarga sem sinal que cai na tela de login. O keeper desliga
-  ("assumido") e fecha o navegador na hora.
+  "Sessão expirada", tela de login, ou **90 s sem dados do servidor**. O keeper desliga
+  ("assumido") e fecha o navegador na hora, sem recarregar.
+- **Desde 11/11/2026 o jogo nem sempre avisa a sessão antiga.** O outro aparelho vê "Você já está
+  conectado" (`errors.auth.already_authenticated`) até o servidor liberar, e então o servidor só
+  para de mandar dados ao keeper. Queda de rede volta sozinha em menos de 60 s (13 casos medidos
+  em 12/11); 90 s de silêncio depois de jogar foram, em todos os casos identificados, alguém
+  entrando em outro aparelho. Antes o keeper recarregava nessa hora, retomava pelo token e
+  tomava a sessão de volta.
+- **Para jogar sem briga:** desligar o keeper no painel antes de abrir o jogo.
 - **Por 5 min o dono pode mandar o keeper voltar:**
   - painel aberto (consultou o status há menos de 15 s): modal "Você assumiu o controle do
     jogo", com "Keeper assume" e "Estou jogando";

@@ -311,18 +311,29 @@ async def test_session_lost_after_playing_yields_to_the_owner(
     assert len(takeovers) == 1
 
 
-async def test_no_signal_reload_landing_on_login_yields(
+async def test_silence_after_playing_yields_without_reloading(
     sup: Supervisor, driver: FakeDriver, clock: FakeClock, takeovers: Takeovers
 ) -> None:
-    """O caso de 12/11 06:14: sem sinal, recarga, tela de login. Recarregar não entra (o token do
-    keeper morreu quando o dono entrou); a tela de login depois de jogar faz o keeper sair."""
+    """12/11/2026 15:13 UTC: o dono entrou no PC ("Você já está conectado" até conseguir) e o
+    servidor só parou de mandar dados ao keeper, sem aviso. Antes, 90 s depois o keeper recarregava
+    e retomava pelo token, tomando a sessão de volta. Agora ele sai e oferece o "keeper assume"."""
     await _play(sup, driver)
-    driver.obs = Observation(Screen.GAME, signal_age=200.0, screen_age=600.0)
-    assert (await sup.tick()).action is Action.RELOAD
-    driver.obs = Observation(Screen.LOGIN)
-    assert (await sup.tick()).action is Action.TURN_OFF
+    driver.obs = Observation(Screen.GAME, signal_age=45.0, screen_age=600.0)
+    assert (await sup.tick()).phase is Phase.RECONECTANDO  # queda de rede volta sozinha
+    driver.calls.clear()
+    driver.obs = Observation(Screen.GAME, signal_age=95.0, screen_age=600.0)
+    d = await sup.tick()
+    assert (d.action, d.phase) == (Action.TURN_OFF, Phase.ASSUMIDO)
+    assert driver.calls == ["close"]  # fechou; nada de recarregar
     assert driver.logins == []
-    assert takeovers == ["a sessão do keeper caiu depois de jogar"]
+    assert takeovers == ["o jogo parou de mandar dados (você entrou em outro aparelho?)"]
+
+
+async def test_silence_before_playing_still_reloads(sup: Supervisor, driver: FakeDriver) -> None:
+    await sup.set_power(True)
+    await sup.tick()  # launch
+    driver.obs = Observation(Screen.GAME, signal_age=None, screen_age=600.0)
+    assert (await sup.tick()).phase is Phase.RECONECTANDO
 
 
 async def test_turning_on_again_logs_in_freely(sup: Supervisor, driver: FakeDriver) -> None:
@@ -428,6 +439,6 @@ async def test_reconnects_counted_after_playing(
     await sup.tick()  # launch: não é reconexão
     driver.obs = PLAYING
     await sup.tick()
-    driver.obs = Observation(Screen.GAME, signal_age=300.0, screen_age=600.0)
-    assert (await sup.tick()).action is Action.RELOAD
+    driver.obs = Observation(Screen.LOADING, crashed=True, screen_age=1.0)
+    assert (await sup.tick()).action is Action.RELOAD  # a página caiu: recarrega
     assert sup.status().reconnects_24h == 1

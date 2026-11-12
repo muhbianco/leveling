@@ -178,6 +178,18 @@ def decide(obs: Observation, ctx: Context) -> Decision:
             return Decision(Action.NONE, Phase.JOGANDO)
         dead = obs.signal_age is None or obs.signal_age > SIGNAL_DEAD_SECONDS
         if dead and obs.screen_age > SIGNAL_DEAD_SECONDS:
+            # Depois de jogar, 90 s de silêncio é o dono entrando em outro aparelho: desde
+            # 11/11/2026 o servidor do jogo para de mandar dados à sessão antiga sem avisar (o
+            # outro aparelho vê "Você já está conectado" até conseguir entrar). Queda de rede
+            # volta sozinha em menos de 60 s (13 casos medidos em 12/11). Recarregar retomaria
+            # pelo token e tomaria a sessão de volta: o keeper sai em vez disso.
+            given_up = (
+                None
+                if ctx.manual
+                else _yield(ctx, "o jogo parou de mandar dados (você entrou em outro aparelho?)")
+            )
+            if given_up is not None:
+                return given_up
             return _gated(Action.RELOAD, Phase.RECONECTANDO, ctx, "sem sinal do servidor do jogo")
         return Decision(Action.NONE, Phase.RECONECTANDO)
 
