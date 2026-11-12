@@ -61,7 +61,9 @@ function showWhose(info) {
     return;
   }
   const name = info.name || info.email;
-  const until = info.expires_at ? ` · até ${timeFmt.format(new Date(info.expires_at))}` : "";
+  const until = info.expires_at
+    ? ` · até ${timeFmt.format(new Date(info.expires_at))}`
+    : " · sempre aberta";
   whoseLabel = `Instância de ${name}`;
   el.textContent = `${whoseLabel}${until}`;
   el.title = `${info.email}${until}`;

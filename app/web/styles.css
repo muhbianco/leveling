@@ -164,11 +164,11 @@ body.login .card { max-width: 380px; width: 100%; text-align: center; }
 
 .form { display: grid; gap: 12px; margin-top: 12px; }
 .form label { display: grid; gap: 4px; font-size: 0.9rem; color: var(--muted); }
-.form input {
+.form input, .form select {
   font: inherit; color: var(--text); background: var(--bg);
   border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
 }
-.form input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.form input:focus, .form select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .form input:disabled, .form button:disabled { opacity: 0.5; }
 
 details { margin-top: 8px; }
@@ -186,3 +186,10 @@ summary { cursor: pointer; color: var(--accent); }
 body.login .card.access-card { max-width: 440px; }
 .access-card .actions.center { justify-content: center; }
 .access-card .actions .button { flex: 1 1 auto; }
+.request-form { margin-top: 12px; padding: 12px; border: 1px solid var(--accent); border-radius: 10px; }
+.form-title { margin: 0; font-weight: 600; }
+#open-box form { margin-bottom: 4px; }
+.reason-box {
+  margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--accent);
+  background: var(--bg); border-radius: 6px; text-align: left; overflow-wrap: anywhere;
+}

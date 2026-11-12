@@ -10,6 +10,7 @@ const token = window.location.pathname.split("/")[2] || "";
 let csrf = "";
 let requestId = "";
 let busy = false;
+let durationKey = "";
 
 const fmt = new Intl.DateTimeFormat("pt-BR", {
   timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
@@ -19,6 +20,13 @@ function fmtTime(iso) {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : fmt.format(d);
 }
+
+const DURATIONS = {
+  "1h": "por 1 hora",
+  "4h": "por 4 horas",
+  "12h": "por 12 horas",
+  sempre: "sem prazo (sempre aberto)",
+};
 
 const REFUSED = {
   pedido_nao_encontrado: "Esse pedido expirou ou já foi respondido.",
@@ -68,7 +76,11 @@ async function load() {
   requestId = req.id;
   $("requester").textContent = req.requester;
   $("hunter").textContent = req.hunter ? ` (${req.hunter})` : "";
-  $("times").textContent = `Pedido às ${fmtTime(req.created_at)} · vale até ${fmtTime(req.expires_at)}`;
+  $("duration").textContent = DURATIONS[req.duration] || req.duration;
+  $("reason").textContent = `Motivo: ${req.reason || "—"}`;
+  $("times").textContent =
+    `Pedido às ${fmtTime(req.created_at)} · convite vale até ${fmtTime(req.expires_at)}`;
+  durationKey = req.duration;
   show("ask");
 }
 
@@ -110,17 +122,14 @@ async function decide(path, body, doneText) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  for (const btn of document.querySelectorAll("button[data-hours]")) {
-    btn.addEventListener("click", () => {
-      const hours = Number(btn.dataset.hours);
-      const label = hours === 168 ? "7 dias" : `${hours} h`;
-      decide(
-        `/api/access/requests/${encodeURIComponent(requestId)}/approve`,
-        { hours },
-        `Acesso liberado por ${label}. Dá para revogar a qualquer momento no painel, em "Acesso à sua instância".`,
-      );
-    });
-  }
+  $("approve").addEventListener("click", () => {
+    const label = DURATIONS[durationKey] || "";
+    decide(
+      `/api/access/requests/${encodeURIComponent(requestId)}/approve`,
+      null,
+      `Acesso aceito ${label}, contando a partir de agora. Dá para fechar a qualquer momento no painel, em "Acesso à sua instância".`,
+    );
+  });
   $("deny").addEventListener("click", () => {
     decide(
       `/api/access/requests/${encodeURIComponent(requestId)}/deny`,

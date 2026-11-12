@@ -50,6 +50,9 @@ const ERRORS = {
   pedido_nao_encontrado: "Esse pedido expirou ou já foi respondido. Atualize a página.",
   acesso_nao_encontrado: "Esse acesso já acabou. Atualize a página.",
   outra_conta: "Esse pedido é para outra conta Google.",
+  prazo_invalido: "Escolha um tempo da lista.",
+  motivo_invalido: "Escreva o motivo (de 3 a 200 caracteres).",
+  destino_invalido: "Escolha um jogador da lista ou todos.",
 };
 
 // Estado do aviso de pedido de acesso (WhatsApp do dono da instância).
@@ -61,11 +64,12 @@ const NOTIFY = {
   sem_whatsapp: "O WhatsApp não está configurado no servidor. O pedido está no painel do dono.",
 };
 
-const GRANT_CHOICES = [
-  [1, "Liberar 1 h"],
-  [12, "12 h"],
-  [168, "7 dias"],
-];
+const DURATIONS = {
+  "1h": "1 hora",
+  "4h": "4 horas",
+  "12h": "12 horas",
+  sempre: "sempre aberto",
+};
 
 const $ = (id) => document.getElementById(id);
 let csrf = "";
@@ -216,6 +220,15 @@ function accessButton(label, action, data, extra = "") {
   return btn;
 }
 
+// "até 12/11, 14:00" ou "sempre aberto".
+function untilText(iso) {
+  return iso ? `até ${fmtTime(iso)}` : "sempre aberto";
+}
+
+function durationText(key) {
+  return DURATIONS[key] || key;
+}
+
 // Instâncias dos outros (só admin): pedir, acompanhar o pedido e abrir a tela liberada.
 function renderShared(access) {
   const box = $("shared");
@@ -235,8 +248,9 @@ function renderShared(access) {
       const a = item.access;
       const li = el("li", a.state === "liberado" ? "active" : "");
       const [phase, tone] = PHASES[item.phase] || [item.phase, "warn"];
+      const who = personName(item.name, item.email);
       li.append(
-        el("span", "name", personName(item.name, item.email)),
+        el("span", "name", who),
         el("span", "origin", item.email),
         el("span", `badge ${tone}`, phase),
       );
@@ -247,21 +261,27 @@ function renderShared(access) {
         open.href = a.remote_url;
         open.target = "_blank";
         open.rel = "noopener";
-        actions.append(open, accessButton("Sair", "leave", { id: a.grant_id }));
-        note.textContent = `Liberado até ${fmtTime(a.expires_at)}.`;
+        actions.append(open);
+        if (a.scope === "voce") actions.append(accessButton("Sair", "leave", { id: a.grant_id }));
+        const scope = a.scope === "todos" ? "Aberta para todos" : "Liberada para você";
+        note.textContent = `${scope}, ${untilText(a.expires_at)}. Motivo: ${a.reason || "—"}.`;
         if (!item.desired_on) {
           note.textContent += " O keeper dele está desligado: a tela fica vazia até ele ligar.";
         }
       } else if (a.state === "pendente") {
         if (a.notify === "falhou") {
-          actions.append(accessButton("Pedir de novo", "request", { slot: item.slot_id }));
+          actions.append(accessButton("Pedir de novo", "request", { slot: item.slot_id, who }));
         }
         actions.append(accessButton("Cancelar", "cancel", { id: a.request_id }));
-        note.textContent = `${NOTIFY[a.notify] || "Pedido enviado."} Vale até ${fmtTime(a.expires_at)}.`;
+        note.textContent =
+          `${NOTIFY[a.notify] || "Pedido enviado."} Pedido: ${durationText(a.duration)}. ` +
+          `Convite vale até ${fmtTime(a.expires_at)}.`;
       } else if (a.state === "recusado") {
         note.textContent = `O dono recusou. Novo pedido a partir de ${fmtTime(a.expires_at)}.`;
       } else {
-        actions.append(accessButton("Pedir acesso", "request", { slot: item.slot_id }, "primary"));
+        actions.append(
+          accessButton("Pedir acesso", "request", { slot: item.slot_id, who }, "primary"),
+        );
       }
       li.append(actions);
       if (note.textContent) li.append(note);
@@ -270,45 +290,69 @@ function renderShared(access) {
   );
 }
 
-// Pedidos que chegaram para a minha instância e quem tem acesso a ela.
+// Formulário único de pedido, fora da lista: o redesenho da lista não apaga o que se digitou.
+function openRequestForm(slot, who) {
+  const form = $("request-form");
+  form.elements.slot.value = slot;
+  $("request-title").textContent = `Pedir acesso à instância de ${who}`;
+  form.hidden = false;
+  form.elements.reason.focus();
+}
+
+function closeRequestForm() {
+  const form = $("request-form");
+  form.reset();
+  form.hidden = true;
+}
+
+// Pedidos que chegaram para a minha instância, quem tem acesso a ela e o "abrir minha instância".
 function renderMyAccess(access) {
   const incoming = (access && access.incoming) || [];
   const granted = (access && access.granted) || [];
-  $("my-access").hidden = !incoming.length && !granted.length;
-  const sig = JSON.stringify([incoming, granted]);
+  const people = (access && access.people) || [];
+  const sig = JSON.stringify([incoming, granted, people]);
   if (sig === myAccessSig) return;
   myAccessSig = sig;
   $("incoming").replaceChildren(
     ...incoming.map((r) => {
       const li = el("li", "pending");
+      const who = personName(r.name, r.email);
       li.append(
-        el("span", "name", `${personName(r.name, r.email)} pede acesso`),
-        el("span", "origin", `${r.email} · vale até ${fmtTime(r.expires_at)}`),
+        el("span", "name", `${who} pede ${durationText(r.duration)}`),
+        el("span", "origin", `${r.email} · convite até ${fmtTime(r.expires_at)}`),
       );
       const actions = el("span", "row-actions");
-      for (const [hours, label] of GRANT_CHOICES) {
-        actions.append(
-          accessButton(label, "approve", { id: r.id, hours }, hours === 1 ? "primary" : ""),
-        );
-      }
-      actions.append(accessButton("Recusar", "deny", { id: r.id }, "danger"));
-      li.append(actions);
+      actions.append(
+        accessButton("Aceitar", "approve", { id: r.id }, "primary"),
+        accessButton("Recusar", "deny", { id: r.id }, "danger"),
+      );
+      li.append(actions, el("p", "hint wide", `Motivo: ${r.reason || "—"}`));
       return li;
     }),
   );
   $("granted").replaceChildren(
     ...granted.map((g) => {
       const li = el("li", "active");
+      const all = g.audience === "todos";
+      const origin = g.origin === "pedido" ? "pedido aceito" : "aberta por você";
       li.append(
-        el("span", "name", personName(g.name, g.email)),
-        el("span", "origin", `${g.email} · liberado até ${fmtTime(g.expires_at)}`),
+        el("span", "name", all ? "Todos os jogadores" : personName(g.name, g.audience)),
+        el("span", "origin", `${origin} · ${untilText(g.expires_at)}`),
       );
       const actions = el("span", "row-actions");
-      actions.append(accessButton("Revogar", "revoke", { id: g.id }, "danger"));
-      li.append(actions);
+      actions.append(accessButton("Fechar", "revoke", { id: g.id, all: all ? "1" : "" }, "danger"));
+      li.append(actions, el("p", "hint wide", `Motivo: ${g.reason || "—"}`));
       return li;
     }),
   );
+  // Destinos do "abrir": todos + cada jogador admin. Mantém a escolha atual se ela ainda existe.
+  const select = $("open-audience");
+  const chosen = select.value;
+  select.replaceChildren(
+    new Option("Todos os jogadores", "*"),
+    ...people.map((p) => new Option(`${personName(p.name, p.email)} (${p.email})`, p.email)),
+  );
+  if ([...select.options].some((o) => o.value === chosen)) select.value = chosen;
 }
 
 async function onAccessAction(event) {
@@ -316,33 +360,83 @@ async function onAccessAction(event) {
   if (!btn) return;
   const errorId = btn.closest("#shared") ? "shared-error" : "my-access-error";
   showError(errorId, "");
-  const { accessAction: action, id, slot, hours } = btn.dataset;
+  const { accessAction: action, id, slot, who, all } = btn.dataset;
   const path = `/api/access/requests/${encodeURIComponent(id || "")}`;
   let res;
   if (action === "request") {
-    res = await send("/api/access/requests", "POST", { slot: Number(slot) });
+    openRequestForm(slot, who);
+    return;
   } else if (action === "cancel") {
     res = await send(path, "DELETE");
   } else if (action === "approve") {
-    res = await send(`${path}/approve`, "POST", { hours: Number(hours) });
+    res = await send(`${path}/approve`, "POST");
   } else if (action === "deny") {
     res = await send(`${path}/deny`, "POST");
   } else if (action === "revoke" || action === "leave") {
-    const ask = action === "revoke"
-      ? "Revogar o acesso? A tela remota de quem recebeu cai na hora."
-      : "Abrir mão do acesso a essa instância?";
+    const ask = action === "leave"
+      ? "Abrir mão do acesso a essa instância?"
+      : all
+        ? "Fechar a instância para todos? Quem estiver na tela remota cai na hora."
+        : "Fechar esse acesso? A tela remota de quem recebeu cai na hora.";
     if (!window.confirm(ask)) return;
     res = await send(`/api/access/grants/${encodeURIComponent(id)}`, "DELETE");
   } else {
     return;
   }
-  if (!res) return;
+  await afterAccess(res, errorId);
+}
+
+async function afterAccess(res, errorId) {
+  if (!res) return false;
   if (!res.ok) {
-    showError(errorId, await errorFrom(res, "Não foi possível. Tente de novo."));
+    const invalid = "Confira o tempo e o motivo (de 3 a 200 caracteres).";
+    showError(errorId, await errorFrom(res, "Não foi possível. Tente de novo.", invalid));
     await refreshStatus();
-    return;
+    return false;
   }
   render(await res.json());
+  return true;
+}
+
+function bindAccessForms() {
+  const request = $("request-form");
+  request.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    showError("shared-error", "");
+    const data = new FormData(request);
+    const res = await send("/api/access/requests", "POST", {
+      slot: Number(data.get("slot")),
+      duration: String(data.get("duration")),
+      reason: String(data.get("reason") || ""),
+    });
+    if (await afterAccess(res, "shared-error")) closeRequestForm();
+  });
+  $("request-cancel").addEventListener("click", closeRequestForm);
+
+  const open = $("open-form");
+  open.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    showError("my-access-error", "");
+    const data = new FormData(open);
+    const audience = String(data.get("audience"));
+    const duration = String(data.get("duration"));
+    if (
+      audience === "*" &&
+      duration === "sempre" &&
+      !window.confirm("Abrir para todos os jogadores, sem prazo? Fica aberta até você fechar.")
+    ) {
+      return;
+    }
+    const res = await send("/api/access/grants", "POST", {
+      audience,
+      duration,
+      reason: String(data.get("reason") || ""),
+    });
+    if (await afterAccess(res, "my-access-error")) {
+      open.elements.reason.value = "";
+      $("open-box").open = false;
+    }
+  });
 }
 
 // A sessão caiu depois de jogar: o servidor segura o login por alguns segundos à espera do
@@ -448,14 +542,18 @@ async function send(path, method, body) {
   }
 }
 
-async function errorFrom(res, fallback = "Não foi possível salvar. Tente de novo.") {
+async function errorFrom(
+  res,
+  fallback = "Não foi possível salvar. Tente de novo.",
+  invalid = "Confira o nome de caçador e a senha.",
+) {
   try {
     const data = await res.json();
     if (typeof data.detail === "string" && ERRORS[data.detail]) return ERRORS[data.detail];
   } catch (err) {
     // corpo sem JSON
   }
-  if (res.status === 422) return "Confira o nome de caçador e a senha.";
+  if (res.status === 422) return invalid;
   return fallback;
 }
 
@@ -569,6 +667,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("accounts").addEventListener("click", onAccountAction);
   $("shared").addEventListener("click", onAccessAction);
   $("my-access").addEventListener("click", onAccessAction);
+  bindAccessForms();
   $("confirm-elsewhere").addEventListener("click", async () => {
     const res = await send("/api/confirm/elsewhere", "POST");
     if (res && res.ok) render(await res.json());

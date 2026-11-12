@@ -68,7 +68,8 @@ async def bridge(
     subprotocol = "binary" if "binary" in ws.scope.get("subprotocols", []) else None
     await ws.accept(subprotocol=subprotocol)
     supervisor.viewer_joined()
-    revoked = None if grant is None else access.watch(grant.id)
+    slot_id = runtime.record.id
+    changed = None if grant is None else access.watch(slot_id)
     if grant is not None:
         await access.event(runtime, f"{access.label(sess.email)} abriu a tela remota")
     logger.info("remote view opened (shared=%s)", grant is not None)
@@ -93,17 +94,17 @@ async def bridge(
             await ws.send_bytes(data)
 
     async def guard() -> None:
-        """Termina quando o acesso de quem não é o dono acaba (revogado, vencido, slot trocado)."""
-        assert grant is not None and revoked is not None
+        """Termina quando nenhum acesso cobre mais quem está vendo (fechado, vencido, slot
+        trocado). Cada mudança nos acessos do slot acorda e reavalia: perder o acesso pessoal
+        com a instância ainda aberta para todos não derruba a tela."""
+        assert changed is not None
         while True:
-            left = access.grant_left(grant.id)
+            changed.clear()
+            left = access.access_left(sess.email, slot_id)
             if left is None or left <= 0:
                 return
-            try:
-                await asyncio.wait_for(revoked.wait(), timeout=min(left, GRANT_RECHECK_S))
-            except TimeoutError:
-                continue
-            return
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(changed.wait(), timeout=min(left, GRANT_RECHECK_S))
 
     tasks = [asyncio.create_task(ws_to_tcp()), asyncio.create_task(tcp_to_ws())]
     if grant is not None:
@@ -119,14 +120,14 @@ async def bridge(
                 await task
     finally:
         supervisor.viewer_left()
-        if grant is not None and revoked is not None:
-            access.unwatch(grant.id, revoked)
+        if changed is not None:
+            access.unwatch(slot_id, changed)
         # O navegador fica sabendo primeiro; o TCP local fecha depois, com prazo (no Proactor do
         # Windows o wait_closed depois de um read cancelado pode não voltar).
         if ws.application_state is WebSocketState.CONNECTED:
             with contextlib.suppress(RuntimeError, WebSocketDisconnect):
                 # Acesso encerrado: 1008, para a tela remota não insistir em reconectar.
-                ended = grant is not None and access.grant_left(grant.id) is None
+                ended = grant is not None and access.access_left(sess.email, slot_id) is None
                 await ws.close(code=POLICY_VIOLATION if ended else 1000)
         writer.close()
         with contextlib.suppress(OSError, TimeoutError):

@@ -14,9 +14,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from playwright.async_api import Error as PlaywrightError
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator
 
-from app.access import ID_PATTERN, TOKEN_PATTERN, AccessError, AccessService
+from app.access import (
+    EVERYONE,
+    ID_PATTERN,
+    REASON_MAX,
+    TOKEN_PATTERN,
+    AccessError,
+    AccessService,
+    clean_reason,
+    iso_or_none,
+)
 from app.access import iso as iso_z
 from app.auth import (
     FLOW_COOKIE,
@@ -68,6 +77,8 @@ ACCESS_ERROR_STATUS = {
     "pedido_nao_encontrado": status.HTTP_404_NOT_FOUND,
     "acesso_nao_encontrado": status.HTTP_404_NOT_FOUND,
     "prazo_invalido": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "motivo_invalido": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "destino_invalido": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "pedidos_demais": status.HTTP_429_TOO_MANY_REQUESTS,
     "acessos_demais": status.HTTP_429_TOO_MANY_REQUESTS,
 }
@@ -94,12 +105,25 @@ class PowerIn(BaseModel):
     on: bool
 
 
+# Tempo de acesso (app.access.DURATIONS) e motivo, nos dois modos.
+Duration = Literal["1h", "4h", "12h", "sempre"]
+Reason = Annotated[str, Field(max_length=REASON_MAX * 2), AfterValidator(clean_reason)]
+
+
 class AccessRequestIn(BaseModel):
+    """Pedir acesso: a instância, o tempo (conta a partir do aceite) e o motivo."""
+
     slot: int = Field(ge=1, le=8)
+    duration: Duration
+    reason: Reason
 
 
-class ApproveIn(BaseModel):
-    hours: Literal[1, 12, 168]
+class OpenIn(BaseModel):
+    """Abrir minha instância: para um jogador (e-mail) ou para todos ("*")."""
+
+    audience: str = Field(min_length=1, max_length=254)
+    duration: Duration
+    reason: Reason
 
 
 class AccountIn(BaseModel):
@@ -344,9 +368,9 @@ def build_router(settings: Settings) -> APIRouter:
 
     @router.post("/api/access/requests")
     async def request_access(body: AccessRequestIn, svc: Svc, sess: WriteSession) -> JSONResponse:
-        """Admin pede a tela remota de outra instância: o link vai ao WhatsApp do dono dela."""
+        """Admin pede a tela remota de outra instância: o convite vai ao WhatsApp do dono."""
         try:
-            await svc.access.request(sess.email, body.slot)
+            await svc.access.request(sess.email, body.slot, body.duration, body.reason)
         except AccessError as exc:
             raise _access_refused(exc) from exc
         return await _status_response(svc, sess)
@@ -360,12 +384,11 @@ def build_router(settings: Settings) -> APIRouter:
         return await _status_response(svc, sess)
 
     @router.post("/api/access/requests/{request_id}/approve")
-    async def approve_request(
-        request_id: AccessId, body: ApproveIn, svc: Svc, sess: WriteSession
-    ) -> JSONResponse:
-        """Só o dono da instância (pela sessão Google dele) libera."""
+    async def approve_request(request_id: AccessId, svc: Svc, sess: WriteSession) -> JSONResponse:
+        """Só o dono da instância (pela sessão Google dele) aceita; vale o tempo pedido, a partir
+        de agora."""
         try:
-            await svc.access.approve(sess.email, request_id, body.hours)
+            await svc.access.approve(sess.email, request_id)
         except AccessError as exc:
             raise _access_refused(exc) from exc
         return await _status_response(svc, sess)
@@ -378,9 +401,20 @@ def build_router(settings: Settings) -> APIRouter:
             raise _access_refused(exc) from exc
         return await _status_response(svc, sess)
 
+    @router.post("/api/access/grants")
+    async def open_instance(body: OpenIn, svc: Svc, sess: WriteSession) -> JSONResponse:
+        """O dono abre a própria instância para um jogador ou para todos; quem recebe é avisado no
+        WhatsApp."""
+        try:
+            await svc.access.open(sess.email, body.audience, body.duration, body.reason)
+        except AccessError as exc:
+            raise _access_refused(exc) from exc
+        return await _status_response(svc, sess)
+
     @router.delete("/api/access/grants/{grant_id}")
     async def revoke_grant(grant_id: AccessId, svc: Svc, sess: WriteSession) -> JSONResponse:
-        """O dono revoga, ou quem recebeu abre mão. A tela remota aberta cai na hora."""
+        """O dono fecha, ou quem recebeu abre mão do acesso pessoal. A tela remota de quem perdeu
+        o acesso cai na hora."""
         try:
             await svc.access.revoke(sess.email, grant_id)
         except AccessError as exc:
@@ -408,6 +442,8 @@ def build_router(settings: Settings) -> APIRouter:
                 "id": req.id,
                 "requester": svc.access.label(req.requester),
                 "hunter": hunter,
+                "duration": req.duration,
+                "reason": req.reason,
                 "created_at": iso_z(req.created_at),
                 "expires_at": iso_z(req.expires_at),
             },
@@ -446,7 +482,9 @@ def build_router(settings: Settings) -> APIRouter:
             "own": grant is None,
             "name": runtime.supervisor.status().game_username or None,
             "email": record.email,
-            "expires_at": None if grant is None else iso_z(grant.expires_at),
+            "scope": None if grant is None else ("todos" if grant.audience == EVERYONE else "voce"),
+            "duration": None if grant is None else grant.duration,
+            "expires_at": None if grant is None else iso_or_none(grant.expires_at),
         }
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 

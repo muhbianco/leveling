@@ -17,15 +17,15 @@
 
     <div id="ask" hidden>
       <h2>Pedido de acesso à sua tela remota</h2>
-      <p><strong id="requester"></strong> pediu acesso à tela remota da sua instância<span id="hunter"></span>.</p>
+      <p><strong id="requester"></strong> pediu acesso à tela remota da sua instância<span id="hunter"></span>
+        <strong id="duration"></strong>.</p>
+      <p class="reason-box" id="reason"></p>
       <p class="muted small" id="times"></p>
-      <p class="hint">Com acesso, a pessoa vê e mexe no jogo da sua instância até o prazo vencer
-        ou você revogar no painel. Sem troca de itens ou gold entre as contas: é a condição
-        combinada com o dev do jogo.</p>
+      <p class="hint">O tempo de acesso só começa a contar quando você aceitar. Com acesso, a
+        pessoa vê e mexe no jogo da sua instância até o prazo vencer ou você fechar no painel. Sem
+        troca de itens ou gold entre as contas: é a condição combinada com o dev do jogo.</p>
       <div class="actions center">
-        <button type="button" class="button primary" data-hours="1">Liberar por 1 hora</button>
-        <button type="button" class="button" data-hours="12">Liberar por 12 horas</button>
-        <button type="button" class="button" data-hours="168">Liberar por 7 dias</button>
+        <button type="button" class="button primary" id="approve">Aceitar</button>
         <button type="button" class="button danger" id="deny">Recusar</button>
       </div>
     </div>

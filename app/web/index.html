@@ -74,13 +74,38 @@
           apertado, tela cheia e qualidade rápida para conexão fraca.</p>
       </section>
 
-      <section class="card" id="my-access" hidden>
+      <section class="card" id="my-access">
         <h2>Acesso à sua instância</h2>
         <ul class="accounts" id="incoming"></ul>
         <ul class="accounts" id="granted"></ul>
+        <details id="open-box">
+          <summary>Abrir minha instância</summary>
+          <form id="open-form" class="form" autocomplete="off">
+            <label>Para quem
+              <select name="audience" id="open-audience">
+                <option value="*">Todos os jogadores</option>
+              </select>
+            </label>
+            <label>Tempo
+              <select name="duration">
+              <option value="1h">1 hora</option>
+              <option value="4h" selected>4 horas</option>
+              <option value="12h">12 horas</option>
+              <option value="sempre">Sempre aberto</option>
+              </select>
+            </label>
+            <label>Motivo
+              <input name="reason" required minlength="3" maxlength="200"
+                     placeholder="Ex.: olhar a caçada enquanto estou fora">
+            </label>
+            <button type="submit" class="button primary">Abrir</button>
+          </form>
+          <p class="hint">Quem recebe é avisado no WhatsApp. "Todos os jogadores" vale também
+            para quem entrar depois. Abrir de novo para o mesmo destino troca o tempo e o motivo.</p>
+        </details>
         <p class="error" id="my-access-error" hidden></p>
-        <p class="hint">Quem você libera abre a tela remota da sua instância (vê e mexe no jogo)
-          até o prazo vencer ou você revogar. Revogar derruba a tela aberta na hora. Enquanto
+        <p class="hint">Quem tem acesso abre a tela remota da sua instância (vê e mexe no jogo)
+          até o prazo vencer ou você fechar. Fechar derruba a tela aberta na hora. Enquanto
           alguém está na tela remota, o robô só observa.</p>
       </section>
 
@@ -124,8 +149,30 @@
     <section class="card" id="shared" hidden>
       <h2>Instâncias dos outros jogadores</h2>
       <ul class="accounts" id="shared-list"></ul>
+      <form id="request-form" class="form request-form" autocomplete="off" hidden>
+        <p class="form-title" id="request-title"></p>
+        <input type="hidden" name="slot">
+        <label>Tempo de acesso
+          <select name="duration">
+              <option value="1h">1 hora</option>
+              <option value="4h" selected>4 horas</option>
+              <option value="12h">12 horas</option>
+              <option value="sempre">Sempre aberto</option>
+          </select>
+        </label>
+        <label>Motivo
+          <input name="reason" required minlength="3" maxlength="200"
+                 placeholder="Ex.: ajudar a montar o equipamento">
+        </label>
+        <div class="actions">
+          <button type="submit" class="button primary">Enviar pedido</button>
+          <button type="button" class="button" id="request-cancel">Cancelar</button>
+        </div>
+        <p class="hint">O convite vale 4 horas. O tempo de acesso só começa a contar quando o dono
+          aceitar.</p>
+      </form>
       <p class="error" id="shared-error" hidden></p>
-      <p class="hint">"Pedir acesso" manda um link ao WhatsApp do dono da instância. Ele libera
+      <p class="hint">"Pedir acesso" manda um convite ao WhatsApp do dono da instância. Ele aceita
         entrando com a conta Google dele, e o pedido também aparece no painel dele. Sem troca de
         itens ou gold entre as contas: é a condição combinada com o dev do jogo.</p>
     </section>

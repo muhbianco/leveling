@@ -1,5 +1,6 @@
-"""Acesso à tela remota da instância de outro jogador: pedido, link no WhatsApp, liberação pelo
-dono logado, prazo, revogação e a ponte VNC respeitando tudo isso."""
+"""Acesso à tela remota da instância de outro jogador, nos dois modos: pedir acesso (convite no
+WhatsApp, aceite pelo dono logado, tempo contado do aceite) e abrir a própria instância (para um
+jogador ou para todos, com aviso a quem recebe). Prazo, fechar e a ponte VNC respeitando tudo."""
 
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from app.access import REQUEST_TTL_S, AccessService
+from app.access import INVITE_TTL_S, AccessService
 from app.auth import SESSION_COOKIE
 from app.config import Settings
 from app.whatsapp import SendResult
@@ -115,8 +116,31 @@ def wait_notified(client: TestClient, slot_id: int) -> dict[str, Any]:
     raise AssertionError("aviso não terminou")
 
 
-def ask(client: TestClient, csrf: str, slot_id: int) -> Any:
-    return client.post("/api/access/requests", json={"slot": slot_id}, headers=write(csrf))
+def ask(
+    client: TestClient,
+    csrf: str,
+    slot_id: int,
+    duration: str = "1h",
+    reason: str = "ver a caçada",
+) -> Any:
+    body = {"slot": slot_id, "duration": duration, "reason": reason}
+    return client.post("/api/access/requests", json=body, headers=write(csrf))
+
+
+def open_to(
+    client: TestClient, csrf: str, audience: str, duration: str = "1h", reason: str = "olhar"
+) -> Any:
+    body = {"audience": audience, "duration": duration, "reason": reason}
+    return client.post("/api/access/grants", json=body, headers=write(csrf))
+
+
+def wait_sent(world: World, count: int) -> list[tuple[str, str]]:
+    """Os avisos de acesso saem em segundo plano: espera chegarem `count` mensagens."""
+    for _ in range(100):
+        if len(world.messenger.sent) >= count:
+            return world.messenger.sent
+        threading.Event().wait(0.02)
+    raise AssertionError(f"esperava {count} mensagens, vieram {len(world.messenger.sent)}")
 
 
 class Scene:
@@ -132,9 +156,9 @@ class Scene:
         self.owner = owner
         self.asker = asker
 
-    def request(self) -> tuple[str, str]:
+    def request(self, duration: str = "1h", reason: str = "ver a caçada") -> tuple[str, str]:
         """Pede, espera o WhatsApp e devolve (id do pedido, token do link)."""
-        res = ask(self.asker, self.asker_csrf, self.slot_id)
+        res = ask(self.asker, self.asker_csrf, self.slot_id, duration, reason)
         assert res.status_code == 200, res.text
         access = wait_notified(self.asker, self.slot_id)
         assert access["state"] == "pendente"
@@ -144,11 +168,9 @@ class Scene:
         assert found is not None
         return access["request_id"], found.group(1)
 
-    def approve(self, request_id: str, hours: int = 1) -> Any:
+    def approve(self, request_id: str) -> Any:
         return self.owner.post(
-            f"/api/access/requests/{request_id}/approve",
-            json={"hours": hours},
-            headers=write(self.owner_csrf),
+            f"/api/access/requests/{request_id}/approve", headers=write(self.owner_csrf)
         )
 
 
@@ -161,17 +183,20 @@ def scene(world: World, google: FakeGoogle, owner: TestClient, asker: TestClient
 
 
 def test_request_sends_link_to_owner_whatsapp(scene: Scene, world: World) -> None:
-    _request_id, token = scene.request()
+    _request_id, token = scene.request("4h", "  montar o\n equipamento  ")
     phone, text = world.messenger.sent[0]
     assert phone == ACAIS_PHONE
     assert ERUDHIR in text and "tela remota" in text
+    assert "por 4 horas" in text and "Motivo: montar o equipamento" in text
     assert shared_entry(scene.asker, scene.slot_id)["access"]["notify"] == "enviado"
     # No disco fica só o hash do token.
     stored = (world.slots._settings.data_dir / "access.json").read_text(encoding="utf-8")
     assert token not in stored
     # O pedido aparece no painel do dono também.
     incoming = status(scene.owner)["access"]["incoming"]
-    assert [r["email"] for r in incoming] == [ERUDHIR]
+    assert [(r["email"], r["duration"], r["reason"]) for r in incoming] == [
+        (ERUDHIR, "4h", "montar o equipamento")
+    ]
     events = scene.owner.get("/api/events").json()["events"]
     assert any("pediu acesso" in e["message"] for e in events)
 
@@ -239,7 +264,7 @@ def test_requester_cancels(scene: Scene) -> None:
 
 def test_request_expires(scene: Scene, world: World) -> None:
     scene.request()
-    world.clock.now += REQUEST_TTL_S + 1
+    world.clock.now += INVITE_TTL_S + 1
     assert shared_entry(scene.asker, scene.slot_id)["access"]["state"] == "nenhum"
     assert status(scene.owner)["access"]["incoming"] == []
 
@@ -286,14 +311,13 @@ def test_link_only_for_the_owner(scene: Scene, world: World, google: FakeGoogle)
     body = mine.json()
     assert body["request"]["id"] == request_id
     assert ERUDHIR in body["request"]["requester"]
+    assert (body["request"]["duration"], body["request"]["reason"]) == ("1h", "ver a caçada")
     assert body["csrf"]
     # Link encaminhado: quem pediu (ou qualquer outro) não consegue liberar.
     other = scene.asker.get(f"/api/access/link/{token}")
     assert (other.status_code, other.json()["detail"]) == (403, "outra_conta")
     stolen = scene.asker.post(
-        f"/api/access/requests/{request_id}/approve",
-        json={"hours": 168},
-        headers=write(scene.asker_csrf),
+        f"/api/access/requests/{request_id}/approve", headers=write(scene.asker_csrf)
     )
     assert (stolen.status_code, stolen.json()["detail"]) == (403, "outra_conta")
     assert scene.owner.get("/api/access/link/" + "x" * 32).status_code == 404
@@ -306,10 +330,12 @@ def test_link_only_for_the_owner(scene: Scene, world: World, google: FakeGoogle)
 def test_owner_approves_and_requester_opens_remote(
     scene: Scene, world: World, google: FakeGoogle, third: TestClient
 ) -> None:
-    request_id, _token = scene.request()
-    assert scene.approve(request_id, 12).status_code == 200
+    request_id, _token = scene.request("12h")
+    assert scene.approve(request_id).status_code == 200
     granted = status(scene.owner)["access"]["granted"]
-    assert [g["email"] for g in granted] == [ERUDHIR]
+    assert [(g["audience"], g["origin"], g["duration"]) for g in granted] == [
+        (ERUDHIR, "pedido", "12h")
+    ]
     access = shared_entry(scene.asker, scene.slot_id)["access"]
     assert access["state"] == "liberado"
     assert access["remote_url"] == f"/remota?slot={scene.slot_id}"
@@ -332,16 +358,36 @@ def test_owner_approves_and_requester_opens_remote(
     assert third.get("/api/remote", params={"slot": scene.slot_id}).status_code == 403
 
 
-def test_approve_validates_hours(scene: Scene) -> None:
+@pytest.mark.parametrize(
+    ("duration", "reason"),
+    [("5h", "ver a caçada"), ("1h", ""), ("1h", "ab"), ("1h", "x" * 201), ("1h", "a\x00bc")],
+)
+def test_request_validates_duration_and_reason(scene: Scene, duration: str, reason: str) -> None:
+    res = ask(scene.asker, scene.asker_csrf, scene.slot_id, duration, reason)
+    assert res.status_code == 422
+    assert scene.world.messenger.sent == []
+
+
+def test_approve_once(scene: Scene) -> None:
     request_id, _token = scene.request()
-    assert scene.approve(request_id, 5).status_code == 422
-    assert scene.approve(request_id, 1).status_code == 200
-    assert scene.approve(request_id, 1).status_code == 404  # já respondido
+    assert scene.approve(request_id).status_code == 200
+    assert scene.approve(request_id).status_code == 404  # já respondido
+
+
+def test_access_time_starts_at_accept(scene: Scene, world: World) -> None:
+    assert INVITE_TTL_S == 4 * 3600
+    request_id, _token = scene.request("4h")
+    world.clock.now += 3 * 3600  # convite ainda vale (4 h)
+    assert scene.approve(request_id).status_code == 200
+    world.clock.now += 3 * 3600  # 6 h depois do pedido, 3 h depois do aceite
+    assert shared_entry(scene.asker, scene.slot_id)["access"]["state"] == "liberado"
+    world.clock.now += 3600 + 1  # 4 h depois do aceite
+    assert shared_entry(scene.asker, scene.slot_id)["access"]["state"] == "nenhum"
 
 
 def test_grant_expires(scene: Scene, world: World) -> None:
     request_id, _token = scene.request()
-    scene.approve(request_id, 1)
+    scene.approve(request_id)
     world.clock.now += 3600 + 1
     assert shared_entry(scene.asker, scene.slot_id)["access"]["state"] == "nenhum"
     assert scene.asker.get("/api/remote", params={"slot": scene.slot_id}).status_code == 403
@@ -357,7 +403,7 @@ def test_deny_blocks_new_request_until_expiry(scene: Scene, world: World) -> Non
     assert shared_entry(scene.asker, scene.slot_id)["access"]["state"] == "recusado"
     again = ask(scene.asker, scene.asker_csrf, scene.slot_id)
     assert (again.status_code, again.json()["detail"]) == (409, "pedido_recusado")
-    world.clock.now += REQUEST_TTL_S + 1
+    world.clock.now += INVITE_TTL_S + 1
     scene.request()
 
 
@@ -382,7 +428,9 @@ def test_deleting_the_instance_ends_access(scene: Scene) -> None:
     assert scene.asker.get("/api/remote", params={"slot": scene.slot_id}).status_code == 403
 
 
-async def test_restart_marks_unfinished_notice_as_failed(settings: Settings) -> None:
+async def test_restart_reads_the_first_version_file(settings: Settings) -> None:
+    """Formato do primeiro deploy: pedido sem tempo/motivo e acesso com `requester`. Um registro
+    estragado sai sozinho; o envio interrompido vira "falhou"."""
     path = settings.data_dir / "access.json"
     path.parent.mkdir(parents=True)
     request = {
@@ -392,11 +440,21 @@ async def test_restart_marks_unfinished_notice_as_failed(settings: Settings) -> 
         "owner": ACAIS,
         "slot_id": 1,
         "created_at": 1e12,
-        "expires_at": 1e12 + REQUEST_TTL_S,
+        "expires_at": 1e12 + 3600,
         "status": "pendente",
         "notify": "enviando",
     }
-    path.write_text(json.dumps({"requests": [request], "grants": []}), encoding="utf-8")
+    grant = {
+        "id": "b" * 12,
+        "requester": ERUDHIR,
+        "owner": ACAIS,
+        "slot_id": 1,
+        "granted_at": 1e12,
+        "expires_at": 1e12 + 3600,
+    }
+    broken = {"id": "c" * 12}
+    payload = {"requests": [request, broken], "grants": [grant, broken]}
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
     class NoSlots:
         def for_id(self, slot_id: int) -> None:
@@ -404,7 +462,103 @@ async def test_restart_marks_unfinished_notice_as_failed(settings: Settings) -> 
 
     service = AccessService(settings, NoSlots(), None, clock=lambda: 1e12)  # type: ignore[arg-type]
     await service.load()
-    assert service._requests[0].notify == "falhou"
+    [req] = service._requests
+    assert (req.notify, req.duration, req.reason) == ("falhou", "1h", "")
+    [old] = service._grants
+    assert (old.audience, old.origin, old.duration) == (ERUDHIR, "pedido", "1h")
+
+
+# --- abrir minha instância -----------------------------------------------------------------------
+
+
+def test_open_to_everyone_forever(
+    scene: Scene, world: World, google: FakeGoogle, third: TestClient
+) -> None:
+    res = open_to(scene.owner, scene.owner_csrf, "*", "sempre", "deixar a caçada à vista")
+    assert res.status_code == 200, res.text
+    [grant] = res.json()["access"]["granted"]
+    assert (grant["audience"], grant["origin"], grant["expires_at"]) == ("todos", "aberto", None)
+    # Quem recebe é avisado: o Erudhir tem WhatsApp; o dono do servidor não tem número aqui.
+    [(phone, text)] = wait_sent(world, 1)
+    assert phone == ERUDHIR_PHONE
+    assert "para todos os jogadores" in text and "sem prazo" in text
+    assert "deixar a caçada à vista" in text and f"/remota?slot={scene.slot_id}" in text
+
+    world.clock.now += 1000 * 86_400  # "sempre aberto" não vence
+    access = shared_entry(scene.asker, scene.slot_id)["access"]
+    assert (access["state"], access["scope"], access["expires_at"]) == ("liberado", "todos", None)
+    info = scene.asker.get("/api/remote", params={"slot": scene.slot_id}).json()
+    assert (info["scope"], info["expires_at"]) == ("todos", None)
+    # Vale para qualquer admin, inclusive quem não estava na conversa.
+    login(third, google, OWNER)
+    assert third.get("/api/remote", params={"slot": scene.slot_id}).status_code == 200
+    # Quem já tem acesso não precisa pedir.
+    again = ask(scene.asker, scene.asker_csrf, scene.slot_id)
+    assert (again.status_code, again.json()["detail"]) == (409, "ja_liberado")
+    # Quem recebeu não fecha o "para todos"; o dono fecha.
+    grant_id = access["grant_id"]
+    url = f"/api/access/grants/{grant_id}"
+    assert scene.asker.delete(url, headers=write(scene.asker_csrf)).status_code == 404
+    assert scene.owner.delete(url, headers=write(scene.owner_csrf)).status_code == 200
+    assert third.get("/api/remote", params={"slot": scene.slot_id}).status_code == 403
+    messages = [e["message"] for e in scene.owner.get("/api/events").json()["events"]]
+    assert any("aberta para todos os jogadores sem prazo" in m for m in messages)
+    assert any("Acesso de todos os jogadores encerrado pelo dono" in m for m in messages)
+
+
+def test_non_admin_never_gets_in_through_everyone(
+    scene: Scene, google: FakeGoogle, third: TestClient
+) -> None:
+    open_to(scene.owner, scene.owner_csrf, "*", "sempre")
+    login(third, google, PLAYER)
+    assert third.get("/api/remote", params={"slot": scene.slot_id}).status_code == 403
+
+
+def test_open_to_one_player(
+    scene: Scene, world: World, google: FakeGoogle, third: TestClient
+) -> None:
+    scene.request()  # pedido pendente do Erudhir: abrir para ele resolve o pedido
+    sent_before = len(world.messenger.sent)
+    res = open_to(scene.owner, scene.owner_csrf, ERUDHIR.upper(), "12h", "ajuda no boss")
+    assert res.status_code == 200
+    body = res.json()["access"]
+    assert body["incoming"] == []
+    [grant] = body["granted"]
+    assert (grant["audience"], grant["duration"]) == (ERUDHIR, "12h")
+    phone, text = wait_sent(world, sent_before + 1)[-1]
+    assert phone == ERUDHIR_PHONE and "para você" in text and "ajuda no boss" in text
+    assert shared_entry(scene.asker, scene.slot_id)["access"]["scope"] == "voce"
+    login(third, google, OWNER)
+    assert third.get("/api/remote", params={"slot": scene.slot_id}).status_code == 403
+    # Abrir de novo para o mesmo destino troca tempo e motivo (continua um acesso só).
+    again = open_to(scene.owner, scene.owner_csrf, ERUDHIR, "1h", "só uma olhada")
+    [grant] = again.json()["access"]["granted"]
+    assert (grant["duration"], grant["reason"]) == ("1h", "só uma olhada")
+    world.clock.now += 3600 + 1
+    assert scene.asker.get("/api/remote", params={"slot": scene.slot_id}).status_code == 403
+
+
+def test_open_refusals(scene: Scene, world: World, google: FakeGoogle, third: TestClient) -> None:
+    for audience, code in (
+        (ACAIS, "destino_invalido"),
+        (PLAYER, "destino_invalido"),
+        ("ninguem@x.com", "destino_invalido"),
+    ):
+        res = open_to(scene.owner, scene.owner_csrf, audience)
+        assert (res.status_code, res.json()["detail"]) == (422, code)
+    assert open_to(scene.owner, scene.owner_csrf, "*", "2h").status_code == 422
+    assert open_to(scene.owner, scene.owner_csrf, "*", "1h", "").status_code == 422
+    assert open_to(scene.owner, "x", "*").status_code == 403  # CSRF
+    # Sem instância não há o que abrir.
+    res = open_to(scene.asker, scene.asker_csrf, "*")
+    assert (res.status_code, res.json()["detail"]) == (409, "sem_instancia")
+    assert world.messenger.sent == []
+
+
+def test_owner_panel_lists_people_to_open_for(scene: Scene) -> None:
+    people = status(scene.owner)["access"]["people"]
+    assert [p["email"] for p in people] == [OWNER, ERUDHIR]
+    assert status(scene.asker)["access"]["people"] == []  # sem instância
 
 
 # --- ponte VNC -----------------------------------------------------------------------------------
@@ -490,3 +644,26 @@ def test_vnc_bridge_slot_param(scene: Scene, world: World, vnc_port: int) -> Non
     # Sem acesso, o próprio dono não ganha registro de "abriu" nos eventos.
     messages = [e["message"] for e in scene.owner.get("/api/events").json()["events"]]
     assert not any("abriu a tela remota" in m for m in messages)
+
+
+def test_vnc_bridge_reevaluates_on_every_change(scene: Scene, world: World, vnc_port: int) -> None:
+    runtime = world.slots.for_id(scene.slot_id)
+    assert runtime is not None
+    runtime.vnc_port = vnc_port
+    cookie = scene.asker.cookies.get(SESSION_COOKIE)
+    headers = {"Origin": ORIGIN, "Cookie": f"{SESSION_COOKIE}={cookie}"}
+    open_to(scene.owner, scene.owner_csrf, ERUDHIR, "1h")
+    open_to(scene.owner, scene.owner_csrf, "*", "sempre")
+    granted = status(scene.owner)["access"]["granted"]
+    ids = {g["audience"]: g["id"] for g in granted}
+    with scene.asker.websocket_connect(f"/vnc/ws?slot={scene.slot_id}", headers=headers) as ws:
+        assert ws.receive_bytes() == b"RFB 003.008\n"
+        url = f"/api/access/grants/{ids[ERUDHIR]}"
+        assert scene.owner.delete(url, headers=write(scene.owner_csrf)).status_code == 200
+        threading.Event().wait(0.3)
+        assert runtime.supervisor.viewers == 1  # ainda coberto pelo "para todos"
+        url = f"/api/access/grants/{ids['todos']}"
+        assert scene.owner.delete(url, headers=write(scene.owner_csrf)).status_code == 200
+        with pytest.raises(WebSocketDisconnect) as ended:
+            ws.receive_bytes()
+        assert ended.value.code == 1008
