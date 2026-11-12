@@ -63,16 +63,23 @@ class LoginFormError(Exception):
 
 # Só leitura. `.slScreen.slAuth` é a tela inicial/login, `.slScreen.slBlock` o bloqueio
 # ("Sessão encerrada", manutenção, falha) e o canvas do Phaser em #game aparece dentro do jogo.
+# `token`: o jogo tem uma sessão salva (sessionStorage ou localStorage). Só se existe, nunca o
+# valor. O cliente grava ao entrar (onAuthOk) e apaga a cada fim de sessão (clearToken), lido do
+# bundle em 12/11/2026.
 PROBE_JS = """() => {
   const shown = (el) => !!el && el.getClientRects().length > 0
     && getComputedStyle(el).visibility !== 'hidden';
   const block = document.querySelector('.slScreen.slBlock');
   const auth = document.querySelector('.slScreen.slAuth');
   const form = document.querySelector('#slAuthForm');
+  const key = 'leveling.session-token';
+  let token = false;
+  try { token = !!(sessionStorage.getItem(key) || localStorage.getItem(key)); } catch (e) {}
   return {
     block: shown(block) ? (block.innerText || '').slice(0, 600) : null,
     login: shown(auth) || shown(form),
     canvas: !!document.querySelector('#game canvas'),
+    token,
   };
 }"""
 
@@ -354,6 +361,7 @@ class GameDriver:
             block_text=" ".join(block_text.split()),
             signal_age=signal_age,
             screen_age=now - self._screen_since,
+            token=isinstance(raw, dict) and bool(raw.get("token")),
         )
 
     # --- única interação: login ----------------------------------------------------------

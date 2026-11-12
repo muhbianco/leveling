@@ -17,6 +17,7 @@ from app.game import (
     LOGIN_TAB_ON,
     LOGIN_USER,
     PASSWORD_STORE_FILES,
+    PROBE_JS,
     GameDriver,
     LoginFormError,
     silence_password_manager,
@@ -48,6 +49,19 @@ def driver_with_page(clock: FakeClock) -> tuple[GameDriver, FakePage]:
     page = FakePage()
     driver._page = page  # type: ignore[assignment]
     return driver, page
+
+
+async def test_probe_reports_a_saved_session_without_its_value() -> None:
+    driver, page = driver_with_page(FakeClock())
+    page.result = {"block": None, "login": True, "canvas": True, "token": True}
+    obs = await driver.observe()
+    assert (obs.screen, obs.token) == (Screen.LOGIN, True)
+    page.result = {"block": None, "login": True, "canvas": False, "token": False}
+    assert (await driver.observe()).token is False
+    page.fail = True
+    assert (await driver.observe()).token is False
+    # A sonda só pergunta se a sessão existe: o valor nunca volta para o Python.
+    assert "!!(sessionStorage.getItem(key) || localStorage.getItem(key))" in PROBE_JS
 
 
 async def test_busy_page_with_live_socket_stays_in_game() -> None:

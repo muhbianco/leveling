@@ -84,6 +84,7 @@ class Observation:
     signal_age: float | None = None  # segundos desde o último quadro do WebSocket do jogo
     screen_age: float = 0.0  # segundos na tela atual
     crashed: bool = False
+    token: bool = False  # o jogo tem uma sessão salva (o valor nunca sai da página)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +98,7 @@ class Context:
     retry_ready: bool = True  # backoff de abrir/recarregar vencido
     attempts_last_hour: int = 0
     relogin: Relogin = Relogin.FREE
+    login_recent: bool = False  # login enviado há pouco: o jogo ainda está decidindo
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,13 +150,28 @@ def decide(obs: Observation, ctx: Context) -> Decision:
         given_up = _yield(ctx, "a sessão do keeper caiu depois de jogar")
         if given_up is not None:
             return given_up
+        if obs.token:
+            # O jogo aceitou o login (gravou a sessão) e continuou na tela de acesso: o "Erro
+            # desconhecido" que aparece quando a conta ainda estava ativa em outro lugar (medido em
+            # 12/11/2026). Recarregar retoma pela sessão salva em ~5 s; digitar a senha de novo
+            # (o que acontecia 2 min depois) é mais um login por cima.
+            if ctx.login_recent:
+                return Decision(Action.NONE, Phase.ENTRANDO, "entrando no jogo")
+            return _gated(
+                Action.RELOAD,
+                Phase.ENTRANDO,
+                ctx,
+                "o jogo aceitou o login e não entrou; recarregando para retomar a sessão",
+            )
         if not ctx.has_credentials:
             return Decision(Action.NONE, Phase.PRECISA_LOGIN, "sem usuário e senha configurados")
         if ctx.login_latched:
             return Decision(Action.NONE, Phase.PRECISA_LOGIN, "login recusado; confira a senha")
         if not ctx.login_allowed:
             return Decision(Action.NONE, Phase.ENTRANDO)
-        return Decision(Action.LOGIN, Phase.ENTRANDO, "token caiu; entrando de novo")
+        # O jogo apaga a sessão salva a cada fim de sessão (outro aparelho, expirada): ligar
+        # depois de jogar em outro lugar sempre passa por aqui. Não é falha.
+        return Decision(Action.LOGIN, Phase.ENTRANDO, "entrando com usuário e senha")
 
     if obs.screen is Screen.GAME:
         if obs.signal_age is not None and obs.signal_age <= SIGNAL_STALE_SECONDS:

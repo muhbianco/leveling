@@ -119,16 +119,29 @@ keeper também sai e espera o dono.
   uma do pugtimothy, sempre com o jogador voltando ao jogo. Entrar com a senha nessa hora derruba o
   jogador.
 - **Login:** usuário e senha pelo WebSocket, sem captcha (o Turnstile é só do cadastro).
-- **Token:** fica em `leveling.session-token` no localStorage. Com o perfil persistente em `/data`,
-  recarregar a página retoma a sessão sem senha.
+- **Token (relido do cliente em 12/11/2026):** `leveling.session-token`, gravado no
+  sessionStorage e no localStorage quando o login dá certo (`onAuthOk`).
+  - **O jogo apaga o token** (`clearToken`) a cada fim de sessão: outro aparelho, expirada, kick,
+    inatividade. Só reinício e manutenção do servidor não apagam. Por isso, ligar o keeper depois
+    de jogar em outro aparelho sempre pede a senha; não é falha.
+  - Com o token salvo, abrir ou recarregar a página retoma a sessão sem senha e sem passar pela
+    tela inicial (medido: 5 a 7 s).
+- **"Erro desconhecido" depois do login (medido em 12/11/2026, com a conta ativa em outro
+  lugar):** o jogo aceita a senha, grava o token e começa a carregar, mas a tela de acesso volta
+  com "Erro desconhecido". Recarregar a página entra pela sessão em ~5 s. O outro aparelho fica
+  com a tela preta em vez da mensagem "acessada em outro dispositivo" (lado do jogo).
 
 ## O que o robô faz e o que não faz
 
 - **Só fica conectado.** Nenhum script injetado na página, nenhum clique dentro do jogo e nenhum
   disfarce: headers, user agent e marcadores de automação ficam como o Chromium manda.
-- **Única interação:** preencher o login quando o token cai, no máximo 1 tentativa a cada 2 min
-  (o jogo pode levar mais de 1 min carregando depois do login). Depois de 3 tentativas sem entrar,
-  trava até a senha mudar ou o jogador clicar "Tentar login de novo".
+- **Única interação:** preencher o login quando o jogo não tem sessão salva, no máximo 1 tentativa
+  a cada 2 min (o jogo pode levar mais de 1 min carregando depois do login). Depois de 3
+  tentativas sem entrar, trava até a senha mudar ou o jogador clicar "Tentar login de novo".
+- **Login aceito mas parado na tela de acesso:** se, 15 s depois de enviar, a tela de acesso
+  continua e o jogo já tem sessão salva (o "Erro desconhecido" acima), o keeper recarrega a página
+  e entra pela sessão. Antes ele digitava a senha de novo 2 min depois: era a "segunda tentativa
+  que funciona". A sonda só pergunta se a sessão existe; o valor nunca sai da página.
 - **O login confere antes de enviar.** O keeper só clica em "Entrar" com os dois campos iguais ao
   usuário e à senha; o que estiver diferente ele redigita (até 3 rodadas) e, se não firmar, não
   envia nada e avisa nos eventos.

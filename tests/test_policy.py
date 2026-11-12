@@ -185,6 +185,32 @@ def test_replaced_block_always_turns_off() -> None:
         assert (d.action, d.off_reason) == (Action.TURN_OFF, OffReason.REPLACED)
 
 
+LOGGED_IN_STUCK = Observation(Screen.LOGIN, token=True)
+
+
+def test_login_accepted_but_stuck_waits_then_reloads() -> None:
+    """12/11/2026: o jogo grava a sessão e fica na tela de acesso com "Erro desconhecido" quando a
+    conta ainda estava ativa em outro lugar. Recarregar retoma pela sessão; nada de 2º login."""
+    recent = Context(desired_on=True, login_recent=True)
+    assert decide(LOGGED_IN_STUCK, recent).action is Action.NONE
+    settled = Context(desired_on=True)
+    d = decide(LOGGED_IN_STUCK, settled)
+    assert (d.action, d.phase) == (Action.RELOAD, Phase.ENTRANDO)
+    assert (
+        decide(LOGGED_IN_STUCK, Context(desired_on=True, retry_ready=False)).action is Action.NONE
+    )
+
+
+def test_yield_comes_before_the_stuck_reload() -> None:
+    ctx = Context(desired_on=True, relogin=Relogin.YIELD)
+    assert decide(LOGGED_IN_STUCK, ctx).action is Action.TURN_OFF
+
+
+def test_login_without_saved_session_types_the_password() -> None:
+    d = decide(Observation(Screen.LOGIN), Context(desired_on=True))
+    assert (d.action, d.reason) == (Action.LOGIN, "entrando com usuário e senha")
+
+
 def test_loading_too_long_reloads() -> None:
     assert decide(Observation(Screen.LOADING, screen_age=10.0), ON).action is Action.NONE
     assert decide(Observation(Screen.LOADING, screen_age=120.0), ON).action is Action.RELOAD

@@ -360,6 +360,31 @@ async def test_restart_while_on_never_logs_in_with_a_dead_token(
     assert driver.logins == [] and len(taken) == 1
 
 
+async def test_login_accepted_but_stuck_reloads_instead_of_a_second_login(
+    sup: Supervisor, driver: FakeDriver, clock: FakeClock
+) -> None:
+    """O jogo gravou a sessão mas ficou na tela de acesso ("Erro desconhecido"): o keeper espera o
+    login assentar e recarrega pela sessão, em vez de digitar a senha de novo 2 min depois."""
+    await sup.set_power(True)
+    assert (await sup.tick()).action is Action.LAUNCH
+    driver.obs = Observation(Screen.LOGIN)
+    assert (await sup.tick()).action is Action.LOGIN
+    driver.obs = Observation(Screen.LOGIN, token=True)
+    clock.now += 5
+    assert (await sup.tick()).action is Action.NONE  # o jogo ainda está decidindo
+    seen = []
+    for _ in range(12):
+        clock.now += 5
+        seen.append((await sup.tick()).action)
+        if seen[-1] is Action.RELOAD:
+            break
+    assert seen[-1] is Action.RELOAD
+    assert Action.LOGIN not in seen
+    assert driver.logins == [("hunter", "pw1")]
+    driver.obs = PLAYING
+    assert (await sup.tick()).phase is Phase.JOGANDO
+
+
 async def test_expired_before_playing_still_reloads(sup: Supervisor, driver: FakeDriver) -> None:
     """Token velho ao ligar: ainda não jogou neste ciclo, então é recarregar e entrar."""
     await sup.set_power(True)

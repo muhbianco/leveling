@@ -40,6 +40,9 @@ BACKOFF_CAP_S = 900.0
 # Depois de enviar o login, o jogo pode levar mais de 1 min carregando com a tela de login ainda
 # à vista (medido em 02/11: 61 s e 78 s). Tentar de novo antes disso atropela o primeiro login.
 LOGIN_SPACING_S = 120.0
+# Depois de enviar o login, quanto esperar a tela de acesso sumir sozinha antes de recarregar pela
+# sessão salva (o jogo grava a sessão em ~1 s e mostra "Erro desconhecido" em ~3 s quando trava).
+LOGIN_SETTLE_S = 15.0
 MAX_LOGINS_BEFORE_LATCH = 3
 HOUR_S = 3600.0
 DAY_S = 86_400.0
@@ -177,6 +180,7 @@ class Supervisor:
                 has_credentials=self._secrets.has_game_credentials,
                 login_latched=self._login_latched,
                 login_allowed=now - self._last_login_at >= LOGIN_SPACING_S,
+                login_recent=now - self._last_login_at < LOGIN_SETTLE_S,
                 retry_ready=now >= self._retry_at,
                 attempts_last_hour=sum(1 for t in self._attempts if t > now - HOUR_S),
                 relogin=Relogin.YIELD if self._played_since_on else Relogin.FREE,
