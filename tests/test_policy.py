@@ -172,10 +172,23 @@ def test_yield_wins_over_login_problems(ctx: Context) -> None:
     assert decide(Observation(Screen.LOGIN), ctx).action is Action.TURN_OFF
 
 
-def test_remote_screen_open_leaves_it_to_the_human() -> None:
+def test_remote_screen_open_does_not_hold_the_keeper_in_the_account() -> None:
+    """12/11/2026 15:26 UTC: o dono olhava a tela preta pela tela remota e o modo manual segurou
+    o aviso de "assumiu". Perder a sessão depois de jogar faz o keeper sair mesmo assim."""
     ctx = Context(desired_on=True, manual=True, relogin=Relogin.YIELD)
+    for obs in (
+        Observation(Screen.LOGIN),
+        EXPIRED,
+        Observation(Screen.GAME, signal_age=95.0, screen_age=600.0),
+    ):
+        d = decide(obs, ctx)
+        assert (d.action, d.off_reason) == (Action.TURN_OFF, OffReason.REPLACED)
+
+
+def test_remote_screen_open_before_playing_only_watches() -> None:
+    ctx = Context(desired_on=True, manual=True)
     assert decide(Observation(Screen.LOGIN), ctx).action is Action.NONE
-    assert decide(EXPIRED, ctx).action is Action.NONE  # só observa: nem recarrega
+    assert decide(EXPIRED, ctx).action is Action.NONE
 
 
 def test_replaced_block_always_turns_off() -> None:
@@ -219,7 +232,7 @@ def test_silence_after_playing_turns_off_instead_of_reloading() -> None:
     assert (d.action, d.off_reason) == (Action.TURN_OFF, OffReason.REPLACED)
     assert decide(DEAD_GAME, Context(desired_on=True)).action is Action.RELOAD  # antes de jogar
     manual = Context(desired_on=True, manual=True, relogin=Relogin.YIELD)
-    assert decide(DEAD_GAME, manual).action is Action.NONE  # tela remota aberta: só observa
+    assert decide(DEAD_GAME, manual).action is Action.TURN_OFF  # mesmo com a tela remota aberta
     doubt = Observation(Screen.GAME, signal_age=45.0, screen_age=600.0)
     assert decide(doubt, Context(desired_on=True, relogin=Relogin.YIELD)).action is Action.NONE
 

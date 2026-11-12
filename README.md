@@ -167,7 +167,9 @@ keeper também sai e espera o dono.
   o robô **desliga** em vez de insistir.
 - **Recargas gentis:** backoff de 30 s até 15 min, com jitter. Mais de 8 aberturas/recargas numa
   hora sem chegar a jogar → desliga com erro.
-- **Tela remota aberta = modo manual:** o robô só observa (o auto-desligar continua valendo).
+- **Tela remota aberta = modo manual:** o robô só observa (não loga nem recarrega). O sair
+  sozinho continua valendo: perder a sessão depois de jogar desliga o keeper e abre o "keeper
+  assume" mesmo com alguém olhando a tela (12/11/2026: o modo manual segurou o aviso).
 - **Se a caçada não continuar sozinha** depois que o servidor assume, retome pela tela remota.
 
 ## Arquitetura

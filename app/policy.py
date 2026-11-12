@@ -145,11 +145,13 @@ def decide(obs: Observation, ctx: Context) -> Decision:
         return _decide_block(obs, ctx)
 
     if obs.screen is Screen.LOGIN:
-        if ctx.manual:
-            return Decision(Action.NONE, Phase.ENTRANDO)
+        # Sair vale mesmo com a tela remota aberta, como o "outro dispositivo": quem assumiu o
+        # jogo é o dono, e quem está olhando a tela não deve segurar o keeper na conta.
         given_up = _yield(ctx, "a sessão do keeper caiu depois de jogar")
         if given_up is not None:
             return given_up
+        if ctx.manual:
+            return Decision(Action.NONE, Phase.ENTRANDO)
         if obs.token:
             # O jogo aceitou o login (gravou a sessão) e continuou na tela de acesso: o "Erro
             # desconhecido" que aparece quando a conta ainda estava ativa em outro lugar (medido em
@@ -182,12 +184,10 @@ def decide(obs: Observation, ctx: Context) -> Decision:
             # 11/11/2026 o servidor do jogo para de mandar dados à sessão antiga sem avisar (o
             # outro aparelho vê "Você já está conectado" até conseguir entrar). Queda de rede
             # volta sozinha em menos de 60 s (13 casos medidos em 12/11). Recarregar retomaria
-            # pelo token e tomaria a sessão de volta: o keeper sai em vez disso.
-            given_up = (
-                None
-                if ctx.manual
-                else _yield(ctx, "o jogo parou de mandar dados (você entrou em outro aparelho?)")
-            )
+            # pelo token e tomaria a sessão de volta: o keeper sai em vez disso. Também com a
+            # tela remota aberta (12/11/2026 15:26 UTC: o dono olhava a tela preta pela tela
+            # remota e o modo manual segurou o aviso).
+            given_up = _yield(ctx, "o jogo parou de mandar dados (você entrou em outro aparelho?)")
             if given_up is not None:
                 return given_up
             return _gated(Action.RELOAD, Phase.RECONECTANDO, ctx, "sem sinal do servidor do jogo")
@@ -218,7 +218,7 @@ def _decide_block(obs: Observation, ctx: Context) -> Decision:
             # Depois de jogar, "sessão expirada" é o dono entrando em outro aparelho (medido em
             # 04/11 e 11/11/2026): sai já, sem recarregar. Antes de jogar (token velho ao ligar),
             # recarregar leva ao login; nenhum clique no bloqueio.
-            given_up = None if ctx.manual else _yield(ctx, text)
+            given_up = _yield(ctx, text)  # mesmo com a tela remota aberta
             if given_up is not None:
                 return given_up
             return _gated(Action.RELOAD, Phase.ENTRANDO, ctx, text)
