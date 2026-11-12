@@ -32,6 +32,9 @@ from tests.test_api import (
     write,
     write_secrets,
 )
+from tests.test_api import (
+    browser as settled_browser,
+)
 
 OWNER = "mear.mind@gmail.com"
 ACAIS = "pugtimothy@gmail.com"
@@ -72,7 +75,7 @@ def world(settings: Settings, google: FakeGoogle) -> World:
 
 
 def browser(world: World) -> Iterator[TestClient]:
-    with TestClient(world.app, base_url=ORIGIN, follow_redirects=False) as c:
+    with settled_browser(world) as c:
         yield c
 
 
@@ -276,7 +279,7 @@ def test_link_without_session_goes_through_google_and_back(
     scene: Scene, world: World, google: FakeGoogle
 ) -> None:
     _request_id, token = scene.request()
-    with TestClient(world.app, base_url=ORIGIN, follow_redirects=False) as phone:
+    with settled_browser(world) as phone:
         res = phone.get(f"/acesso/{token}")
         assert res.status_code == 303
         assert res.headers["location"] == f"/auth/login?next=%2Facesso%2F{token}"

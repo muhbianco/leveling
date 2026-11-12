@@ -12,7 +12,8 @@ steps:
       - ruff check .
       - ruff format --check .
       - mypy app
-      - pytest -q
+      # Teto: um travamento (12/11/2026, #13) segurava o pipeline até o limite do Woodpecker.
+      - timeout 300 pytest -q
       - pip install --quiet pip-audit==2.10.1
       - pip-audit -r requirements.txt
 

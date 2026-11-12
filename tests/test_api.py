@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -197,16 +199,45 @@ def build_world(settings: Settings, google: FakeGoogle) -> World:
     return World(app, slots, registry, drivers, access, messenger, clock, takeover, monotonic)
 
 
+def settle(world: World) -> None:
+    """Espera os avisos que o app solta em segundo plano (WhatsApp + evento no log).
+
+    Cada TestClient roda o app num loop de eventos próprio; um aviso ainda rodando no loop de um
+    navegador e a requisição seguinte de outro navegador disputando o mesmo asyncio.Lock deixam o
+    loop que espera sem ser acordado: o pytest travou assim no CI (pipeline #13, 12/11/2026). Em
+    produção há um loop só."""
+    for _ in range(500):
+        if not world.access._tasks and not world.takeover._tasks:
+            return
+        threading.Event().wait(0.01)
+    raise AssertionError("avisos em segundo plano não terminaram")
+
+
+@contextmanager
+def browser(world: World) -> Iterator[TestClient]:
+    """Um navegador (cookies próprios) que só devolve a resposta depois dos avisos em fundo."""
+    with TestClient(world.app, base_url=ORIGIN, follow_redirects=False) as c:
+        send = c.request
+
+        def request(*args: Any, **kwargs: Any) -> httpx.Response:
+            response = send(*args, **kwargs)
+            settle(world)
+            return response
+
+        c.request = request  # type: ignore[method-assign]
+        yield c
+
+
 @pytest.fixture
 def client(world: World) -> Iterator[TestClient]:
-    with TestClient(world.app, base_url=ORIGIN, follow_redirects=False) as c:
+    with browser(world) as c:
         yield c
 
 
 @pytest.fixture
 def other(world: World) -> Iterator[TestClient]:
     """Segundo navegador (outro jogador), com cookies próprios."""
-    with TestClient(world.app, base_url=ORIGIN, follow_redirects=False) as c:
+    with browser(world) as c:
         yield c
 
 
@@ -432,7 +463,7 @@ def test_third_player_gets_no_slot(
 ) -> None:
     create_instance(client, login(client, google, ADMIN), username="owner-alt")
     create_instance(other, login(other, google, PLAYER), username="pug")
-    with TestClient(world.app, base_url=ORIGIN, follow_redirects=False) as third:
+    with browser(world) as third:
         csrf = login(third, google, THIRD)
         assert third.get("/api/status").json()["capacity"] == {"used": 2, "max": 2}
         res = third.post(

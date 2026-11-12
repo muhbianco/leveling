@@ -34,3 +34,5 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 log_level = "INFO"
+# Teste travado: despeja a pilha de todas as threads (o CI tem teto de tempo).
+faulthandler_timeout = 120
